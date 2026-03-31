@@ -653,7 +653,7 @@ async def render_video(data: RenderRequest):
     return {
         "ok": True,
         "video_url": f"/video/{job_id}.mp4",
-        "video_url_full": f"https://ffmpeg-render-api-production-1143.up.railway.app/video/{job_id}.mp4",
+        "video_url_full": f"{os.environ.get('BASE_URL', 'https://ffmpeg-render-api-productionlbn.up.railway.app')}/video/{job_id}.mp4",
         "audio_duration": audio_duration,
         "subtitles_mode_received": data.subtitles_mode,
         "render_mode": render_mode,
