@@ -6,6 +6,7 @@ import shutil
 import subprocess
 import base64
 import re
+import urllib.request
 
 from fastapi import FastAPI, HTTPException
 from fastapi.staticfiles import StaticFiles
@@ -16,10 +17,14 @@ BASE_DIR = "/tmp/ffmpeg_render"
 AUDIO_DIR = os.path.join(BASE_DIR, "audio")
 VIDEO_DIR = os.path.join(BASE_DIR, "video")
 FONTS_DIR = os.path.join(BASE_DIR, "fonts")
+IMAGE_DIR = os.path.join(BASE_DIR, "images")
+
+MUSIC_FILE = "/app/music/background.mp3"
 
 os.makedirs(AUDIO_DIR, exist_ok=True)
 os.makedirs(VIDEO_DIR, exist_ok=True)
 os.makedirs(FONTS_DIR, exist_ok=True)
+os.makedirs(IMAGE_DIR, exist_ok=True)
 
 APP_FONTS_DIR = "/app/fonts"
 APP_FONT_FILE = os.path.join(APP_FONTS_DIR, "BebasNeue-Regular.ttf")
@@ -29,6 +34,9 @@ if os.path.exists(APP_FONT_FILE) and not os.path.exists(RUNTIME_FONT_FILE):
     shutil.copy(APP_FONT_FILE, RUNTIME_FONT_FILE)
 
 app.mount("/video", StaticFiles(directory=VIDEO_DIR), name="video")
+
+ASS_WHITE = r"\c&HFFFFFF&"
+ASS_RED = r"\c&H0000FF&"
 
 
 def escape_ffmpeg_path(path: str) -> str:
@@ -75,6 +83,45 @@ def get_audio_duration(audio_path: str) -> float:
     return 8.0
 
 
+def download_image(image_url: str, job_id: str) -> str:
+    image_path = os.path.join(IMAGE_DIR, f"{job_id}.jpg")
+    urllib.request.urlretrieve(image_url, image_path)
+    return image_path
+
+
+def prepare_background(image_path: str, job_id: str, duration: float) -> str:
+    bg_path = os.path.join(IMAGE_DIR, f"{job_id}_bg.mp4")
+
+    cmd = [
+        "ffmpeg",
+        "-hide_banner",
+        "-loglevel", "error",
+        "-y",
+        "-loop", "1",
+        "-i", image_path,
+        "-t", str(duration),
+        "-vf", "scale=720:1280:force_original_aspect_ratio=increase,crop=720:1280,format=yuv420p",
+        "-r", "24",
+        "-c:v", "libx264",
+        "-preset", "ultrafast",
+        "-crf", "28",
+        bg_path
+    ]
+
+    result = subprocess.run(cmd, capture_output=True, text=True)
+
+    if result.returncode != 0:
+        raise HTTPException(
+            status_code=500,
+            detail={
+                "message": "Error preparando imagen de fondo",
+                "stderr": result.stderr,
+            }
+        )
+
+    return bg_path
+
+
 def build_title_only_filter(numero_regla: str) -> str:
     if not os.path.exists(RUNTIME_FONT_FILE):
         raise HTTPException(
@@ -84,7 +131,7 @@ def build_title_only_filter(numero_regla: str) -> str:
 
     safe_font_path = escape_ffmpeg_path(RUNTIME_FONT_FILE)
 
-    return ",".join([
+    filters = [
         (
             f"drawtext="
             f"fontfile='{safe_font_path}':"
@@ -106,8 +153,10 @@ def build_title_only_filter(numero_regla: str) -> str:
             f"bordercolor=black:"
             f"x=(w-text_w)/2:"
             f"y=h*0.25"
-        )
-    ])
+        ),
+    ]
+
+    return ",".join(filters)
 
 
 def seconds_to_ass_time(seconds: float) -> str:
@@ -118,7 +167,12 @@ def seconds_to_ass_time(seconds: float) -> str:
 
 
 def escape_ass_text(text: str) -> str:
-    return text.replace("{", r"\{").replace("}", r"\}")
+    return (
+        str(text)
+        .replace("\\", r"\\")
+        .replace("{", r"\{")
+        .replace("}", r"\}")
+    )
 
 
 def speed_up_alignment(alignment: dict, speed: float) -> dict:
@@ -185,10 +239,13 @@ def build_words_from_alignment(alignment: dict) -> list:
     return words
 
 
-def split_text_two_lines(text: str, max_line_chars: int = 26) -> str:
-    words = text.split()
+def split_word_items_two_lines(word_items: list, max_line_chars: int = 26) -> list:
+    if not word_items:
+        return []
+
+    words = [str(item["word"]) for item in word_items]
     if len(words) <= 1:
-        return text
+        return [word_items]
 
     best_split_index = None
     best_score = None
@@ -207,13 +264,9 @@ def split_text_two_lines(text: str, max_line_chars: int = 26) -> str:
 
     if best_split_index is None:
         midpoint = len(words) // 2
-        line1 = " ".join(words[:midpoint])
-        line2 = " ".join(words[midpoint:])
-        return f"{line1}\\N{line2}"
+        return [word_items[:midpoint], word_items[midpoint:]]
 
-    line1 = " ".join(words[:best_split_index])
-    line2 = " ".join(words[best_split_index:])
-    return f"{line1}\\N{line2}"
+    return [word_items[:best_split_index], word_items[best_split_index:]]
 
 
 def group_words_into_cues(words: list, max_words: int = 8, max_chars: int = 52) -> list:
@@ -230,15 +283,18 @@ def group_words_into_cues(words: list, max_words: int = 8, max_chars: int = 52) 
             start_value = float(bucket[0]["start"])
             end_value = float(bucket[-1]["end"])
 
-            if len(raw_text) > 26:
-                cue_text = split_text_two_lines(raw_text.upper(), max_line_chars=26)
-            else:
-                cue_text = raw_text.upper()
-
             cues.append({
-                "text": cue_text,
+                "text": raw_text.upper(),
                 "start": start_value,
                 "end": end_value,
+                "words": [
+                    {
+                        "word": str(item["word"]).upper(),
+                        "start": float(item["start"]),
+                        "end": float(item["end"]),
+                    }
+                    for item in bucket
+                ],
             })
 
         bucket = []
@@ -271,6 +327,42 @@ def group_words_into_cues(words: list, max_words: int = 8, max_chars: int = 52) 
     return cues
 
 
+def build_line_groups(word_items: list, max_line_chars: int = 26) -> list:
+    split_lines = split_word_items_two_lines(word_items, max_line_chars=max_line_chars)
+    groups = []
+    flat_index = 0
+
+    for line_items in split_lines:
+        group = []
+        for item in line_items:
+            group.append({
+                "index": flat_index,
+                "word": str(item["word"]).upper(),
+                "start": float(item["start"]),
+                "end": float(item["end"]),
+            })
+            flat_index += 1
+        groups.append(group)
+
+    return groups
+
+
+def build_ass_dialogue_text(groups: list, active_index: int | None = None) -> str:
+    line_texts = []
+
+    for line in groups:
+        parts = []
+        for item in line:
+            word_text = escape_ass_text(item["word"])
+            if active_index is not None and item["index"] == active_index:
+                parts.append(r"{" + ASS_RED + r"}" + word_text + r"{" + ASS_WHITE + r"}")
+            else:
+                parts.append(word_text)
+        line_texts.append(" ".join(parts))
+
+    return r"{\an5\bord3\shad0\fscx100\fscy100\fsp0" + ASS_WHITE + r"}" + r"\N".join(line_texts)
+
+
 def write_ass_subtitles(subtitles_path: str, cues: list):
     header = """[Script Info]
 ScriptType: v4.00+
@@ -281,7 +373,7 @@ ScaledBorderAndShadow: yes
 
 [V4+ Styles]
 Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
-Style: Default,Bebas Neue,68,&H00FFFFFF,&H00FFFFFF,&H00000000,&H64000000,-1,0,0,0,100,100,0,0,1,3,0,5,50,50,0,1
+Style: Default,Bebas Neue,68,&H00FFFFFF,&H00FFFFFF,&H00000000,&H64000000,-1,0,0,0,100,100,0,0,1,3,0,2,50,50,380,1
 
 [Events]
 Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
@@ -289,11 +381,68 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
 
     with open(subtitles_path, "w", encoding="utf-8") as f:
         f.write(header)
+
         for cue in cues:
-            start = seconds_to_ass_time(cue["start"])
-            end = seconds_to_ass_time(cue["end"])
-            text = escape_ass_text(cue["text"])
-            f.write(f"Dialogue: 0,{start},{end},Default,,0,0,0,,{text}\n")
+            groups = build_line_groups(cue.get("words", []), max_line_chars=26)
+            if not groups:
+                continue
+
+            flat_words = [item for line in groups for item in line]
+            if not flat_words:
+                continue
+
+            segments = []
+            cue_start = float(cue["start"])
+            cue_end = float(cue["end"])
+            cursor = cue_start
+            eps = 0.01
+
+            for item in flat_words:
+                word_start = max(cue_start, float(item["start"]))
+                word_end = min(cue_end, float(item["end"]))
+
+                if word_start > cursor + eps:
+                    segments.append({
+                        "start": cursor,
+                        "end": word_start,
+                        "active_index": None,
+                    })
+
+                if word_end > word_start + eps:
+                    segments.append({
+                        "start": word_start,
+                        "end": word_end,
+                        "active_index": item["index"],
+                    })
+
+                cursor = max(cursor, word_end)
+
+            if cue_end > cursor + eps:
+                segments.append({
+                    "start": cursor,
+                    "end": cue_end,
+                    "active_index": None,
+                })
+
+            merged_segments = []
+            for seg in segments:
+                if seg["end"] <= seg["start"] + eps:
+                    continue
+
+                if (
+                    merged_segments
+                    and merged_segments[-1]["active_index"] == seg["active_index"]
+                    and abs(merged_segments[-1]["end"] - seg["start"]) <= eps
+                ):
+                    merged_segments[-1]["end"] = seg["end"]
+                else:
+                    merged_segments.append(seg)
+
+            for seg in merged_segments:
+                start = seconds_to_ass_time(seg["start"])
+                end = seconds_to_ass_time(seg["end"])
+                text = build_ass_dialogue_text(groups, active_index=seg["active_index"])
+                f.write(f"Dialogue: 0,{start},{end},Default,,0,0,0,,{text}\n")
 
 
 @app.get("/")
@@ -301,16 +450,20 @@ def health():
     return {
         "status": "running",
         "font_exists": os.path.exists(RUNTIME_FONT_FILE),
-        "font_path": RUNTIME_FONT_FILE
+        "font_path": RUNTIME_FONT_FILE,
+        "music_exists": os.path.exists(MUSIC_FILE),
+        "music_path": MUSIC_FILE
     }
 
 
 class RenderRequest(BaseModel):
     numero_regla: str
+    hook: str = ""
     guion: str
     subtitles_mode: str = "dynamic"
     audio_base64: str
     normalized_alignment: dict
+    image_url: str = ""
 
 
 @app.post("/render")
@@ -325,6 +478,7 @@ async def render_video(data: RenderRequest):
 
     input_audio_path = os.path.join(AUDIO_DIR, f"{job_id}.mp3")
     normalized_audio_path = os.path.join(AUDIO_DIR, f"{job_id}_normalized.mp3")
+    mixed_audio_path = os.path.join(AUDIO_DIR, f"{job_id}_mixed.mp3")
     subtitles_path = os.path.join(BASE_DIR, f"{job_id}.ass")
     video_path = os.path.join(VIDEO_DIR, f"{job_id}.mp4")
 
@@ -369,6 +523,27 @@ async def render_video(data: RenderRequest):
             }
         )
 
+    if os.path.exists(MUSIC_FILE):
+        mix_cmd = [
+            "ffmpeg",
+            "-hide_banner",
+            "-loglevel", "error",
+            "-y",
+            "-stream_loop", "-1",
+            "-i", MUSIC_FILE,
+            "-i", normalized_audio_path,
+            "-filter_complex",
+            "[0:a]volume=0.20[bg];[1:a]volume=1.4[voice];[bg][voice]amix=inputs=2:duration=shortest:dropout_transition=2",
+            "-c:a", "libmp3lame",
+            "-b:a", "192k",
+            mixed_audio_path
+        ]
+
+        mix_result = subprocess.run(mix_cmd, capture_output=True, text=True)
+
+        if mix_result.returncode == 0 and os.path.exists(mixed_audio_path):
+            normalized_audio_path = mixed_audio_path
+
     audio_duration = round(get_audio_duration(normalized_audio_path), 3)
 
     adjusted_alignment = speed_up_alignment(data.normalized_alignment, speed_factor)
@@ -379,31 +554,71 @@ async def render_video(data: RenderRequest):
     title_filter = build_title_only_filter(data.numero_regla)
     safe_subtitles_path = escape_ffmpeg_path(subtitles_path)
     safe_fonts_dir = escape_ffmpeg_path(FONTS_DIR)
-    video_filter = f"{title_filter},subtitles='{safe_subtitles_path}':fontsdir='{safe_fonts_dir}'"
-    render_mode = "title_plus_dynamic_subtitles"
 
-    ffmpeg_cmd = [
-        "ffmpeg",
-        "-hide_banner",
-        "-loglevel", "error",
-        "-y",
-        "-f", "lavfi",
-        "-i", f"color=c=black:s=720x1280:r=24:d={audio_duration}",
-        "-i", normalized_audio_path,
-        "-vf", video_filter,
-        "-map", "0:v:0",
-        "-map", "1:a:0",
-        "-c:v", "libx264",
-        "-preset", "ultrafast",
-        "-crf", "28",
-        "-c:a", "aac",
-        "-b:a", "128k",
-        "-ar", "44100",
-        "-pix_fmt", "yuv420p",
-        "-movflags", "+faststart",
-        "-shortest",
-        video_path
-    ]
+    use_image = bool(data.image_url and data.image_url.strip())
+
+    if use_image:
+        try:
+            image_path = download_image(data.image_url, job_id)
+        except Exception as e:
+            use_image = False
+
+    if use_image:
+        # Fondo: imagen con overlay oscuro al 55%
+        overlay_filter = "colorchannelmixer=rr=0.45:gg=0.45:bb=0.45"
+        video_filter = f"{overlay_filter},{title_filter},subtitles='{safe_subtitles_path}':fontsdir='{safe_fonts_dir}'"
+        render_mode = "image_background"
+
+        bg_video_path = prepare_background(image_path, job_id, audio_duration)
+
+        ffmpeg_cmd = [
+            "ffmpeg",
+            "-hide_banner",
+            "-loglevel", "error",
+            "-y",
+            "-i", bg_video_path,
+            "-i", normalized_audio_path,
+            "-vf", video_filter,
+            "-map", "0:v:0",
+            "-map", "1:a:0",
+            "-c:v", "libx264",
+            "-preset", "ultrafast",
+            "-crf", "28",
+            "-c:a", "aac",
+            "-b:a", "128k",
+            "-ar", "44100",
+            "-pix_fmt", "yuv420p",
+            "-movflags", "+faststart",
+            "-shortest",
+            video_path
+        ]
+    else:
+        # Fallback: fondo negro si no hay imagen
+        video_filter = f"{title_filter},subtitles='{safe_subtitles_path}':fontsdir='{safe_fonts_dir}'"
+        render_mode = "black_background"
+
+        ffmpeg_cmd = [
+            "ffmpeg",
+            "-hide_banner",
+            "-loglevel", "error",
+            "-y",
+            "-f", "lavfi",
+            "-i", f"color=c=black:s=720x1280:r=24:d={audio_duration}",
+            "-i", normalized_audio_path,
+            "-vf", video_filter,
+            "-map", "0:v:0",
+            "-map", "1:a:0",
+            "-c:v", "libx264",
+            "-preset", "ultrafast",
+            "-crf", "28",
+            "-c:a", "aac",
+            "-b:a", "128k",
+            "-ar", "44100",
+            "-pix_fmt", "yuv420p",
+            "-movflags", "+faststart",
+            "-shortest",
+            video_path
+        ]
 
     result = subprocess.run(ffmpeg_cmd, capture_output=True, text=True)
 
@@ -443,5 +658,7 @@ async def render_video(data: RenderRequest):
         "subtitles_mode_received": data.subtitles_mode,
         "render_mode": render_mode,
         "cues_count": len(cues),
-        "speed_factor": speed_factor
+        "speed_factor": speed_factor,
+        "music_used": os.path.exists(MUSIC_FILE),
+        "image_used": use_image
     }
