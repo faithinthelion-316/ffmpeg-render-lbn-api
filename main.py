@@ -83,14 +83,28 @@ def get_audio_duration(audio_path: str) -> float:
     return 8.0
 
 
-def download_image(image_url: str, job_id: str) -> str:
-    image_path = os.path.join(IMAGE_DIR, f"{job_id}.jpg")
-    urllib.request.urlretrieve(image_url, image_path)
-    return image_path
+def download_image(image_url: str, path: str) -> str:
+    urllib.request.urlretrieve(image_url, path)
+    return path
 
 
-def prepare_background(image_path: str, job_id: str, duration: float) -> str:
-    bg_path = os.path.join(IMAGE_DIR, f"{job_id}_bg.mp4")
+def prepare_ken_burns_clip(image_path: str, clip_path: str, duration: float, zoom_direction: str = "in") -> str:
+    """
+    Genera un clip con efecto Ken Burns (zoom lento) desde una imagen.
+    zoom_direction: 'in' = zoom in, 'out' = zoom out
+    """
+    if zoom_direction == "in":
+        # Zoom in suave: de 100% a 108%
+        zoompan = (
+            f"zoompan=z='min(zoom+0.0008,1.08)':d={int(duration * 24)}:x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':s=720x1280"
+        )
+    else:
+        # Zoom out suave: de 108% a 100%
+        zoompan = (
+            f"zoompan=z='if(lte(zoom,1.0),1.08,max(1.0,zoom-0.0008))':d={int(duration * 24)}:x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':s=720x1280"
+        )
+
+    vf = f"scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,{zoompan},scale=720:1280,format=yuv420p"
 
     cmd = [
         "ffmpeg",
@@ -100,12 +114,12 @@ def prepare_background(image_path: str, job_id: str, duration: float) -> str:
         "-loop", "1",
         "-i", image_path,
         "-t", str(duration),
-        "-vf", "scale=720:1280:force_original_aspect_ratio=increase,crop=720:1280,format=yuv420p",
+        "-vf", vf,
         "-r", "24",
         "-c:v", "libx264",
         "-preset", "ultrafast",
         "-crf", "28",
-        bg_path
+        clip_path
     ]
 
     result = subprocess.run(cmd, capture_output=True, text=True)
@@ -114,12 +128,46 @@ def prepare_background(image_path: str, job_id: str, duration: float) -> str:
         raise HTTPException(
             status_code=500,
             detail={
-                "message": "Error preparando imagen de fondo",
+                "message": "Error generando clip Ken Burns",
                 "stderr": result.stderr,
             }
         )
 
-    return bg_path
+    return clip_path
+
+
+def concatenate_clips(clip_paths: list, output_path: str) -> str:
+    """Concatena múltiples clips de video en uno solo."""
+    concat_list_path = output_path.replace(".mp4", "_concat.txt")
+
+    with open(concat_list_path, "w") as f:
+        for clip in clip_paths:
+            f.write(f"file '{clip}'\n")
+
+    cmd = [
+        "ffmpeg",
+        "-hide_banner",
+        "-loglevel", "error",
+        "-y",
+        "-f", "concat",
+        "-safe", "0",
+        "-i", concat_list_path,
+        "-c", "copy",
+        output_path
+    ]
+
+    result = subprocess.run(cmd, capture_output=True, text=True)
+
+    if result.returncode != 0:
+        raise HTTPException(
+            status_code=500,
+            detail={
+                "message": "Error concatenando clips",
+                "stderr": result.stderr,
+            }
+        )
+
+    return output_path
 
 
 def build_title_only_filter(numero_regla: str) -> str:
@@ -152,7 +200,7 @@ def build_title_only_filter(numero_regla: str) -> str:
             f"borderw=4:"
             f"bordercolor=black:"
             f"x=(w-text_w)/2:"
-            f"y=h*0.25"
+            f"y=h*0.28"
         ),
     ]
 
@@ -464,6 +512,8 @@ class RenderRequest(BaseModel):
     audio_base64: str
     normalized_alignment: dict
     image_url: str = ""
+    image_url_2: str = ""
+    image_url_3: str = ""
 
 
 @app.post("/render")
@@ -555,43 +605,70 @@ async def render_video(data: RenderRequest):
     safe_subtitles_path = escape_ffmpeg_path(subtitles_path)
     safe_fonts_dir = escape_ffmpeg_path(FONTS_DIR)
 
-    use_image = bool(data.image_url and data.image_url.strip())
+    # Recopilar URLs de imágenes válidas
+    image_urls = []
+    for url in [data.image_url, data.image_url_2, data.image_url_3]:
+        if url and url.strip():
+            image_urls.append(url.strip())
 
-    if use_image:
+    use_images = len(image_urls) > 0
+
+    if use_images:
         try:
-            image_path = download_image(data.image_url, job_id)
-        except Exception:
-            use_image = False
+            # Descargar imágenes
+            image_paths = []
+            for i, url in enumerate(image_urls):
+                img_path = os.path.join(IMAGE_DIR, f"{job_id}_img{i+1}.jpg")
+                download_image(url, img_path)
+                image_paths.append(img_path)
 
-    if use_image:
-        overlay_filter = "colorchannelmixer=rr=0.70:gg=0.70:bb=0.70"
-        video_filter = f"{overlay_filter},{title_filter},subtitles='{safe_subtitles_path}':fontsdir='{safe_fonts_dir}'"
-        render_mode = "image_background"
+            # Duración de cada clip = audio_duration / número de imágenes
+            clip_duration = round(audio_duration / len(image_paths), 3)
 
-        bg_video_path = prepare_background(image_path, job_id, audio_duration)
+            # Generar clips con Ken Burns alternando zoom in y zoom out
+            zoom_directions = ["in", "out", "in"]
+            clip_paths = []
+            for i, img_path in enumerate(image_paths):
+                clip_path = os.path.join(IMAGE_DIR, f"{job_id}_clip{i+1}.mp4")
+                direction = zoom_directions[i % len(zoom_directions)]
+                prepare_ken_burns_clip(img_path, clip_path, clip_duration, direction)
+                clip_paths.append(clip_path)
 
-        ffmpeg_cmd = [
-            "ffmpeg",
-            "-hide_banner",
-            "-loglevel", "error",
-            "-y",
-            "-i", bg_video_path,
-            "-i", normalized_audio_path,
-            "-vf", video_filter,
-            "-map", "0:v:0",
-            "-map", "1:a:0",
-            "-c:v", "libx264",
-            "-preset", "ultrafast",
-            "-crf", "28",
-            "-c:a", "aac",
-            "-b:a", "128k",
-            "-ar", "44100",
-            "-pix_fmt", "yuv420p",
-            "-movflags", "+faststart",
-            "-shortest",
-            video_path
-        ]
-    else:
+            # Concatenar clips
+            bg_video_path = os.path.join(IMAGE_DIR, f"{job_id}_bg.mp4")
+            concatenate_clips(clip_paths, bg_video_path)
+
+            overlay_filter = "colorchannelmixer=rr=0.70:gg=0.70:bb=0.70"
+            video_filter = f"{overlay_filter},{title_filter},subtitles='{safe_subtitles_path}':fontsdir='{safe_fonts_dir}'"
+            render_mode = f"ken_burns_{len(image_paths)}_images"
+
+            ffmpeg_cmd = [
+                "ffmpeg",
+                "-hide_banner",
+                "-loglevel", "error",
+                "-y",
+                "-i", bg_video_path,
+                "-i", normalized_audio_path,
+                "-vf", video_filter,
+                "-map", "0:v:0",
+                "-map", "1:a:0",
+                "-c:v", "libx264",
+                "-preset", "ultrafast",
+                "-crf", "28",
+                "-c:a", "aac",
+                "-b:a", "128k",
+                "-ar", "44100",
+                "-pix_fmt", "yuv420p",
+                "-movflags", "+faststart",
+                "-shortest",
+                video_path
+            ]
+
+        except Exception as e:
+            use_images = False
+            render_mode = "black_background_fallback"
+
+    if not use_images:
         video_filter = f"{title_filter},subtitles='{safe_subtitles_path}':fontsdir='{safe_fonts_dir}'"
         render_mode = "black_background"
 
@@ -658,5 +735,5 @@ async def render_video(data: RenderRequest):
         "cues_count": len(cues),
         "speed_factor": speed_factor,
         "music_used": os.path.exists(MUSIC_FILE),
-        "image_used": use_image
+        "images_used": len(image_urls) if use_images else 0
     }
