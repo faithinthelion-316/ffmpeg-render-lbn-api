@@ -36,7 +36,7 @@ if os.path.exists(APP_FONT_FILE) and not os.path.exists(RUNTIME_FONT_FILE):
 app.mount("/video", StaticFiles(directory=VIDEO_DIR), name="video")
 
 ASS_WHITE = r"\c&HFFFFFF&"
-ASS_RED = r"\c&H0000FF&"
+ASS_GOLD = r"\c&H00D4FF&"
 
 
 def escape_ffmpeg_path(path: str) -> str:
@@ -148,7 +148,7 @@ def build_title_only_filter(numero_regla: str) -> str:
             f"fontfile='{safe_font_path}':"
             f"text='#{numero_regla}':"
             f"fontsize=57:"
-            f"fontcolor=red:"
+            f"fontcolor=0xFFD700:"
             f"borderw=4:"
             f"bordercolor=black:"
             f"x=(w-text_w)/2:"
@@ -355,7 +355,7 @@ def build_ass_dialogue_text(groups: list, active_index: int | None = None) -> st
         for item in line:
             word_text = escape_ass_text(item["word"])
             if active_index is not None and item["index"] == active_index:
-                parts.append(r"{" + ASS_RED + r"}" + word_text + r"{" + ASS_WHITE + r"}")
+                parts.append(r"{" + ASS_GOLD + r"}" + word_text + r"{" + ASS_WHITE + r"}")
             else:
                 parts.append(word_text)
         line_texts.append(" ".join(parts))
@@ -560,11 +560,10 @@ async def render_video(data: RenderRequest):
     if use_image:
         try:
             image_path = download_image(data.image_url, job_id)
-        except Exception as e:
+        except Exception:
             use_image = False
 
     if use_image:
-        # Fondo: imagen con overlay oscuro al 55%
         overlay_filter = "colorchannelmixer=rr=0.45:gg=0.45:bb=0.45"
         video_filter = f"{overlay_filter},{title_filter},subtitles='{safe_subtitles_path}':fontsdir='{safe_fonts_dir}'"
         render_mode = "image_background"
@@ -593,7 +592,6 @@ async def render_video(data: RenderRequest):
             video_path
         ]
     else:
-        # Fallback: fondo negro si no hay imagen
         video_filter = f"{title_filter},subtitles='{safe_subtitles_path}':fontsdir='{safe_fonts_dir}'"
         render_mode = "black_background"
 
