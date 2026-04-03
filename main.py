@@ -639,7 +639,7 @@ async def render_video(data: RenderRequest):
             bg_video_path = os.path.join(IMAGE_DIR, f"{job_id}_bg.mp4")
             build_background(image_paths, bg_video_path, audio_duration, job_id)
 
-            overlay_filter = "colorchannelmixer=rr=0.70:gg=0.70:bb=0.70"
+            overlay_filter = "colorchannelmixer=rr=0.80:gg=0.80:bb=0.80"
             video_filter = f"{overlay_filter},{title_filter},subtitles='{safe_subtitles_path}':fontsdir='{safe_fonts_dir}'"
             render_mode = f"multi_image_{len(image_paths)}"
             images_used = len(image_paths)
