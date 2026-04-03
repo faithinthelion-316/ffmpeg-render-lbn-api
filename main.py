@@ -35,8 +35,9 @@ if os.path.exists(APP_FONT_FILE) and not os.path.exists(RUNTIME_FONT_FILE):
 
 app.mount("/video", StaticFiles(directory=VIDEO_DIR), name="video")
 
+# Mismo color para número y palabra activa
 ASS_WHITE = r"\c&HFFFFFF&"
-ASS_GOLD = r"\c&H00D4FF&"
+ASS_GOLD = r"\c&H5AC1E6&"   # equivalente ASS/BGR de 0xE6C15A
 
 
 def escape_ffmpeg_path(path: str) -> str:
@@ -193,10 +194,12 @@ def build_title_only_filter(numero_regla: str) -> str:
             f"drawtext="
             f"fontfile='{safe_font_path}':"
             f"text='VERDAD':"
-            f"fontsize=50:"
+            f"fontsize=54:"
             f"fontcolor=white:"
             f"borderw=2:"
             f"bordercolor=black:"
+            f"shadowx=1:"
+            f"shadowy=1:"
             f"x=(w-text_w)/2:"
             f"y=h*0.20"
         ),
@@ -204,10 +207,12 @@ def build_title_only_filter(numero_regla: str) -> str:
             f"drawtext="
             f"fontfile='{safe_font_path}':"
             f"text='#{numero_regla}':"
-            f"fontsize=80:"
-            f"fontcolor=0xFFD700:"
+            f"fontsize=90:"
+            f"fontcolor=0xE6C15A:"
             f"borderw=4:"
             f"bordercolor=black:"
+            f"shadowx=2:"
+            f"shadowy=2:"
             f"x=(w-text_w)/2:"
             f"y=h*0.28"
         ),
@@ -430,7 +435,7 @@ ScaledBorderAndShadow: yes
 
 [V4+ Styles]
 Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
-Style: Default,Bebas Neue,68,&H00FFFFFF,&H00FFFFFF,&H00000000,&H64000000,-1,0,0,0,100,100,0,0,1,3,0,2,50,50,380,1
+Style: Default,Bebas Neue,74,&H00FFFFFF,&H00FFFFFF,&H00000000,&H64000000,-1,0,0,0,100,100,0,0,1,3,0,2,50,50,240,1
 
 [Events]
 Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
