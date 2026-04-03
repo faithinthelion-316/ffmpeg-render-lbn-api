@@ -89,28 +89,19 @@ def download_image(image_url: str, path: str) -> str:
 
 
 def build_multi_image_background(image_paths: list, output_path: str, total_duration: float) -> str:
-    """
-    Genera un video de fondo con múltiples imágenes usando filter_complex.
-    Cada imagen ocupa una fracción igual del tiempo total.
-    """
     n = len(image_paths)
     clip_duration = total_duration / n
 
-    # Construir inputs
     inputs = []
     for img_path in image_paths:
         inputs += ["-loop", "1", "-t", str(clip_duration), "-i", img_path]
 
-    # Construir filter_complex
-    # Escalar cada imagen a 720x1280
     scale_filters = ""
     for i in range(n):
         scale_filters += f"[{i}:v]scale=720:1280:force_original_aspect_ratio=increase,crop=720:1280,format=yuv420p,setpts=PTS-STARTPTS[v{i}];"
 
-    # Concatenar todos los clips
     concat_inputs = "".join([f"[v{i}]" for i in range(n)])
     concat_filter = f"{concat_inputs}concat=n={n}:v=1:a=0[vout]"
-
     filter_complex = scale_filters + concat_filter
 
     cmd = [
@@ -118,6 +109,7 @@ def build_multi_image_background(image_paths: list, output_path: str, total_dura
         "-hide_banner",
         "-loglevel", "error",
         "-y",
+        "-vsync", "1",
     ] + inputs + [
         "-filter_complex", filter_complex,
         "-map", "[vout]",
@@ -579,7 +571,6 @@ async def render_video(data: RenderRequest):
     safe_subtitles_path = escape_ffmpeg_path(subtitles_path)
     safe_fonts_dir = escape_ffmpeg_path(FONTS_DIR)
 
-    # Recopilar URLs de imágenes válidas
     image_urls = []
     for url in [data.image_url, data.image_url_2, data.image_url_3]:
         if url and url.strip():
@@ -589,14 +580,12 @@ async def render_video(data: RenderRequest):
 
     if use_images:
         try:
-            # Descargar imágenes
             image_paths = []
             for i, url in enumerate(image_urls):
                 img_path = os.path.join(IMAGE_DIR, f"{job_id}_img{i+1}.jpg")
                 download_image(url, img_path)
                 image_paths.append(img_path)
 
-            # Generar video de fondo con todas las imágenes
             bg_video_path = os.path.join(IMAGE_DIR, f"{job_id}_bg.mp4")
             build_multi_image_background(image_paths, bg_video_path, audio_duration)
 
@@ -628,11 +617,12 @@ async def render_video(data: RenderRequest):
 
         except Exception as e:
             use_images = False
-            render_mode = "black_background_fallback"
+            render_mode = f"black_background_fallback_{str(e)[:80]}"
 
     if not use_images:
         video_filter = f"{title_filter},subtitles='{safe_subtitles_path}':fontsdir='{safe_fonts_dir}'"
-        render_mode = "black_background"
+        if "render_mode" not in locals():
+            render_mode = "black_background"
 
         ffmpeg_cmd = [
             "ffmpeg",
@@ -667,9 +657,6 @@ async def render_video(data: RenderRequest):
                 "returncode": result.returncode,
                 "stdout": result.stdout,
                 "stderr": result.stderr,
-                "video_path": video_path,
-                "subtitles_path": subtitles_path,
-                "audio_path": normalized_audio_path,
                 "render_mode": render_mode,
                 "cues_count": len(cues),
             }
@@ -680,9 +667,6 @@ async def render_video(data: RenderRequest):
             status_code=500,
             detail={
                 "message": "El video no se generó",
-                "video_path": video_path,
-                "subtitles_path": subtitles_path,
-                "audio_path": normalized_audio_path,
                 "render_mode": render_mode,
             }
         )
