@@ -564,7 +564,7 @@ async def render_video(data: RenderRequest):
             use_image = False
 
     if use_image:
-        overlay_filter = "colorchannelmixer=rr=0.60:gg=0.60:bb=0.60"
+        overlay_filter = "colorchannelmixer=rr=0.70:gg=0.70:bb=0.70"
         video_filter = f"{overlay_filter},{title_filter},subtitles='{safe_subtitles_path}':fontsdir='{safe_fonts_dir}'"
         render_mode = "image_background"
 
