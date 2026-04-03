@@ -88,52 +88,71 @@ def download_image(image_url: str, path: str) -> str:
     return path
 
 
-def build_multi_image_background(image_paths: list, output_path: str, total_duration: float) -> str:
-    n = len(image_paths)
-    clip_duration = total_duration / n
-
-    inputs = []
-    for img_path in image_paths:
-        inputs += ["-loop", "1", "-t", str(clip_duration), "-i", img_path]
-
-    scale_filters = ""
-    for i in range(n):
-        scale_filters += f"[{i}:v]scale=720:1280:force_original_aspect_ratio=increase,crop=720:1280,format=yuv420p,setpts=PTS-STARTPTS[v{i}];"
-
-    concat_inputs = "".join([f"[v{i}]" for i in range(n)])
-    concat_filter = f"{concat_inputs}concat=n={n}:v=1:a=0[vout]"
-    filter_complex = scale_filters + concat_filter
-
+def make_clip(image_path: str, clip_path: str, duration: float) -> None:
+    """Genera un clip de video desde una imagen con duración exacta."""
     cmd = [
         "ffmpeg",
         "-hide_banner",
         "-loglevel", "error",
         "-y",
-        "-vsync", "1",
-    ] + inputs + [
-        "-filter_complex", filter_complex,
-        "-map", "[vout]",
+        "-loop", "1",
+        "-i", image_path,
+        "-t", str(duration),
+        "-vf", "scale=720:1280:force_original_aspect_ratio=increase,crop=720:1280,setsar=1,format=yuv420p",
         "-r", "24",
         "-c:v", "libx264",
         "-preset", "ultrafast",
         "-crf", "28",
         "-pix_fmt", "yuv420p",
+        clip_path
+    ]
+    result = subprocess.run(cmd, capture_output=True, text=True)
+    if result.returncode != 0:
+        raise RuntimeError(f"make_clip failed: {result.stderr}")
+
+
+def build_background(image_paths: list, output_path: str, total_duration: float, job_id: str) -> None:
+    """Genera video de fondo concatenando clips individuales."""
+    n = len(image_paths)
+    clip_duration = total_duration / n
+
+    # Paso 1: generar cada clip por separado
+    clip_paths = []
+    for i, img_path in enumerate(image_paths):
+        clip_path = os.path.join(IMAGE_DIR, f"{job_id}_c{i}.mp4")
+        make_clip(img_path, clip_path, clip_duration)
+        if not os.path.exists(clip_path):
+            raise RuntimeError(f"Clip {i} no se generó")
+        clip_paths.append(clip_path)
+
+    # Paso 2: escribir archivo de lista
+    list_path = os.path.join(IMAGE_DIR, f"{job_id}_list.txt")
+    with open(list_path, "w") as f:
+        for cp in clip_paths:
+            f.write(f"file '{cp}'\n")
+
+    # Paso 3: concatenar con re-encode
+    cmd = [
+        "ffmpeg",
+        "-hide_banner",
+        "-loglevel", "error",
+        "-y",
+        "-f", "concat",
+        "-safe", "0",
+        "-i", list_path,
+        "-vf", "setpts=PTS-STARTPTS",
+        "-c:v", "libx264",
+        "-preset", "ultrafast",
+        "-crf", "28",
+        "-r", "24",
+        "-pix_fmt", "yuv420p",
         output_path
     ]
-
     result = subprocess.run(cmd, capture_output=True, text=True)
-
     if result.returncode != 0:
-        raise HTTPException(
-            status_code=500,
-            detail={
-                "message": "Error generando fondo multi-imagen",
-                "stderr": result.stderr,
-                "stdout": result.stdout,
-            }
-        )
-
-    return output_path
+        raise RuntimeError(f"concat failed: {result.stderr}")
+    if not os.path.exists(output_path):
+        raise RuntimeError("output background not created")
 
 
 def build_title_only_filter(numero_regla: str) -> str:
@@ -577,21 +596,24 @@ async def render_video(data: RenderRequest):
             image_urls.append(url.strip())
 
     use_images = len(image_urls) > 0
+    render_mode = "black_background"
+    images_used = 0
 
     if use_images:
         try:
             image_paths = []
             for i, url in enumerate(image_urls):
-                img_path = os.path.join(IMAGE_DIR, f"{job_id}_img{i+1}.jpg")
+                img_path = os.path.join(IMAGE_DIR, f"{job_id}_img{i}.jpg")
                 download_image(url, img_path)
                 image_paths.append(img_path)
 
             bg_video_path = os.path.join(IMAGE_DIR, f"{job_id}_bg.mp4")
-            build_multi_image_background(image_paths, bg_video_path, audio_duration)
+            build_background(image_paths, bg_video_path, audio_duration, job_id)
 
             overlay_filter = "colorchannelmixer=rr=0.70:gg=0.70:bb=0.70"
             video_filter = f"{overlay_filter},{title_filter},subtitles='{safe_subtitles_path}':fontsdir='{safe_fonts_dir}'"
             render_mode = f"multi_image_{len(image_paths)}"
+            images_used = len(image_paths)
 
             ffmpeg_cmd = [
                 "ffmpeg",
@@ -617,12 +639,10 @@ async def render_video(data: RenderRequest):
 
         except Exception as e:
             use_images = False
-            render_mode = f"black_background_fallback_{str(e)[:80]}"
+            render_mode = f"fallback_{str(e)[:100]}"
 
     if not use_images:
         video_filter = f"{title_filter},subtitles='{safe_subtitles_path}':fontsdir='{safe_fonts_dir}'"
-        if "render_mode" not in locals():
-            render_mode = "black_background"
 
         ffmpeg_cmd = [
             "ffmpeg",
@@ -658,7 +678,6 @@ async def render_video(data: RenderRequest):
                 "stdout": result.stdout,
                 "stderr": result.stderr,
                 "render_mode": render_mode,
-                "cues_count": len(cues),
             }
         )
 
@@ -681,5 +700,5 @@ async def render_video(data: RenderRequest):
         "cues_count": len(cues),
         "speed_factor": speed_factor,
         "music_used": os.path.exists(MUSIC_FILE),
-        "images_used": len(image_urls) if use_images else 0
+        "images_used": images_used
     }
