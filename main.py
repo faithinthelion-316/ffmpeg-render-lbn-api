@@ -88,55 +88,44 @@ def download_image(image_url: str, path: str) -> str:
     return path
 
 
-def prepare_static_clip(image_path: str, clip_path: str, duration: float) -> str:
-    """Genera un clip estático desde una imagen."""
+def build_multi_image_background(image_paths: list, output_path: str, total_duration: float) -> str:
+    """
+    Genera un video de fondo con múltiples imágenes usando filter_complex.
+    Cada imagen ocupa una fracción igual del tiempo total.
+    """
+    n = len(image_paths)
+    clip_duration = total_duration / n
+
+    # Construir inputs
+    inputs = []
+    for img_path in image_paths:
+        inputs += ["-loop", "1", "-t", str(clip_duration), "-i", img_path]
+
+    # Construir filter_complex
+    # Escalar cada imagen a 720x1280
+    scale_filters = ""
+    for i in range(n):
+        scale_filters += f"[{i}:v]scale=720:1280:force_original_aspect_ratio=increase,crop=720:1280,format=yuv420p,setpts=PTS-STARTPTS[v{i}];"
+
+    # Concatenar todos los clips
+    concat_inputs = "".join([f"[v{i}]" for i in range(n)])
+    concat_filter = f"{concat_inputs}concat=n={n}:v=1:a=0[vout]"
+
+    filter_complex = scale_filters + concat_filter
+
     cmd = [
         "ffmpeg",
         "-hide_banner",
         "-loglevel", "error",
         "-y",
-        "-loop", "1",
-        "-i", image_path,
-        "-t", str(duration),
-        "-vf", "scale=720:1280:force_original_aspect_ratio=increase,crop=720:1280,format=yuv420p",
+    ] + inputs + [
+        "-filter_complex", filter_complex,
+        "-map", "[vout]",
         "-r", "24",
         "-c:v", "libx264",
         "-preset", "ultrafast",
         "-crf", "28",
-        clip_path
-    ]
-
-    result = subprocess.run(cmd, capture_output=True, text=True)
-
-    if result.returncode != 0:
-        raise HTTPException(
-            status_code=500,
-            detail={
-                "message": "Error generando clip de imagen",
-                "stderr": result.stderr,
-            }
-        )
-
-    return clip_path
-
-
-def concatenate_clips(clip_paths: list, output_path: str) -> str:
-    """Concatena múltiples clips de video en uno solo."""
-    concat_list_path = output_path.replace(".mp4", "_concat.txt")
-
-    with open(concat_list_path, "w") as f:
-        for clip in clip_paths:
-            f.write(f"file '{clip}'\n")
-
-    cmd = [
-        "ffmpeg",
-        "-hide_banner",
-        "-loglevel", "error",
-        "-y",
-        "-f", "concat",
-        "-safe", "0",
-        "-i", concat_list_path,
-        "-c", "copy",
+        "-pix_fmt", "yuv420p",
         output_path
     ]
 
@@ -146,8 +135,9 @@ def concatenate_clips(clip_paths: list, output_path: str) -> str:
         raise HTTPException(
             status_code=500,
             detail={
-                "message": "Error concatenando clips",
+                "message": "Error generando fondo multi-imagen",
                 "stderr": result.stderr,
+                "stdout": result.stdout,
             }
         )
 
@@ -606,23 +596,13 @@ async def render_video(data: RenderRequest):
                 download_image(url, img_path)
                 image_paths.append(img_path)
 
-            # Duración de cada clip = audio_duration / número de imágenes
-            clip_duration = round(audio_duration / len(image_paths), 3)
-
-            # Generar clips estáticos para cada imagen
-            clip_paths = []
-            for i, img_path in enumerate(image_paths):
-                clip_path = os.path.join(IMAGE_DIR, f"{job_id}_clip{i+1}.mp4")
-                prepare_static_clip(img_path, clip_path, clip_duration)
-                clip_paths.append(clip_path)
-
-            # Concatenar clips
+            # Generar video de fondo con todas las imágenes
             bg_video_path = os.path.join(IMAGE_DIR, f"{job_id}_bg.mp4")
-            concatenate_clips(clip_paths, bg_video_path)
+            build_multi_image_background(image_paths, bg_video_path, audio_duration)
 
             overlay_filter = "colorchannelmixer=rr=0.70:gg=0.70:bb=0.70"
             video_filter = f"{overlay_filter},{title_filter},subtitles='{safe_subtitles_path}':fontsdir='{safe_fonts_dir}'"
-            render_mode = f"static_{len(image_paths)}_images"
+            render_mode = f"multi_image_{len(image_paths)}"
 
             ffmpeg_cmd = [
                 "ffmpeg",
