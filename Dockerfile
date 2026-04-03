@@ -18,7 +18,8 @@ COPY . .
 RUN mkdir -p /tmp/ffmpeg_render/audio \
     /tmp/ffmpeg_render/video \
     /tmp/ffmpeg_render/fonts \
-    /tmp/ffmpeg_render/texts
+    /tmp/ffmpeg_render/texts \
+    /tmp/ffmpeg_render/images
 
 EXPOSE 8080
 
