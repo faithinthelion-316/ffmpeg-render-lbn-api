@@ -89,22 +89,52 @@ def download_image(image_url: str, path: str) -> str:
 
 
 def build_background(image_paths: list, output_path: str, total_duration: float, job_id: str) -> None:
-    """Genera video de fondo concatenando imágenes con filter_complex."""
+    """
+    Genera video de fondo con efecto Ken Burns suave por imagen
+    y concatena todos los segmentos.
+    """
     n = len(image_paths)
+    if n == 0:
+        raise RuntimeError("No image paths received")
+
+    fps = 24
     clip_duration = total_duration / n
 
-    # Construir inputs: cada imagen como input con -loop 1 y -t
     inputs = []
     for img_path in image_paths:
         inputs.extend(["-loop", "1", "-t", f"{clip_duration:.3f}", "-i", img_path])
 
-    # Construir filter_complex: escalar cada input y concatenar
     filter_parts = []
     concat_inputs = ""
+
     for i in range(n):
+        frames = max(1, int(round(clip_duration * fps)))
+
+        if i % 3 == 0:
+            x_expr = "iw/2-(iw/zoom/2)+(on*0.4)"
+            y_expr = "ih/2-(ih/zoom/2)+(on*0.25)"
+        elif i % 3 == 1:
+            x_expr = "iw/2-(iw/zoom/2)"
+            y_expr = "ih/2-(ih/zoom/2)-(on*0.25)"
+        else:
+            x_expr = "iw/2-(iw/zoom/2)-(on*0.35)"
+            y_expr = "ih/2-(ih/zoom/2)"
+
         filter_parts.append(
-            f"[{i}:v]scale=720:1280:force_original_aspect_ratio=increase,"
-            f"crop=720:1280,setsar=1,fps=24,format=yuv420p[v{i}]"
+            f"[{i}:v]"
+            f"scale=900:1600:force_original_aspect_ratio=increase,"
+            f"zoompan="
+            f"z='min(zoom+0.0009,1.12)':"
+            f"x='{x_expr}':"
+            f"y='{y_expr}':"
+            f"d={frames}:"
+            f"s=720x1280:"
+            f"fps={fps},"
+            f"setsar=1,"
+            f"format=yuv420p,"
+            f"trim=duration={clip_duration:.3f},"
+            f"setpts=PTS-STARTPTS"
+            f"[v{i}]"
         )
         concat_inputs += f"[v{i}]"
 
@@ -137,10 +167,11 @@ def build_background(image_paths: list, output_path: str, total_duration: float,
     if not os.path.exists(output_path):
         raise RuntimeError("output background not created")
 
-    # Verificar duración del video generado
     probe_result = subprocess.run(
-        ["ffprobe", "-v", "error", "-show_entries", "format=duration",
-         "-of", "default=noprint_wrappers=1:nokey=1", output_path],
+        [
+            "ffprobe", "-v", "error", "-show_entries", "format=duration",
+            "-of", "default=noprint_wrappers=1:nokey=1", output_path
+        ],
         capture_output=True, text=True
     )
     bg_duration = probe_result.stdout.strip()
