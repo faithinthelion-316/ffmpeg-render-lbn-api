@@ -90,47 +90,47 @@ def download_image(image_url: str, path: str) -> str:
 
 def build_background(image_paths: list, output_path: str, total_duration: float, job_id: str) -> None:
     """
-    Genera video de fondo con efecto Ken Burns (zoompan) por imagen.
-    Usa setpts=PTS-STARTPTS después de cada zoompan para resetear
-    timestamps antes del concat — sin esto, las imágenes se solapan.
+    Genera video de fondo con efecto Ken Burns suave por imagen
+    SIN transiciones fade/xfade, usando concat estable.
     """
     n = len(image_paths)
     if n == 0:
         raise RuntimeError("No image paths received")
 
     fps = 24
+    width = 720
+    height = 1280
     clip_duration = total_duration / n
 
     inputs = []
     for img_path in image_paths:
-        inputs.extend(["-loop", "1", "-i", img_path])
+        inputs.extend(["-i", img_path])
 
     filter_parts = []
 
     for i in range(n):
         frames = max(1, int(round(clip_duration * fps)))
+        zoom_step = 0.03 / frames if frames > 0 else 0.0
 
         filter_parts.append(
             f"[{i}:v]"
             f"scale=800:1422:force_original_aspect_ratio=increase,"
-            f"crop=800:1422,setsar=1,"
+            f"crop=800:1422,"
+            f"setsar=1,"
             f"zoompan="
             f"z='1.0+0.03*(on/{frames})':"
             f"x='trunc(iw/2-(iw/zoom/2))':"
             f"y='trunc(ih/2-(ih/zoom/2))':"
             f"d={frames}:"
-            f"s=720x1280:"
+            f"s={width}x{height}:"
             f"fps={fps},"
             f"setpts=PTS-STARTPTS,"
             f"format=yuv420p"
             f"[v{i}]"
         )
 
-    if n == 1:
-        filter_parts.append("[v0]null[outv]")
-    else:
-        concat_inputs = "".join(f"[v{i}]" for i in range(n))
-        filter_parts.append(f"{concat_inputs}concat=n={n}:v=1:a=0[outv]")
+    concat_inputs = "".join(f"[v{i}]" for i in range(n))
+    filter_parts.append(f"{concat_inputs}concat=n={n}:v=1:a=0[outv]")
 
     filter_complex = ";".join(filter_parts)
 
