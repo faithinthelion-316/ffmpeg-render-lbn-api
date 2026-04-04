@@ -92,6 +92,10 @@ def build_background(image_paths: list, output_path: str, total_duration: float,
     """
     Genera video de fondo con efecto Ken Burns suave por imagen
     SIN transiciones fade/xfade, usando concat estable.
+
+    Ajuste anti-jitter:
+    - elimina trunc() en x/y
+    - usa una progresión de zoom más estable por frame
     """
     n = len(image_paths)
     if n == 0:
@@ -110,7 +114,6 @@ def build_background(image_paths: list, output_path: str, total_duration: float,
 
     for i in range(n):
         frames = max(1, int(round(clip_duration * fps)))
-        zoom_step = 0.03 / frames if frames > 0 else 0.0
 
         filter_parts.append(
             f"[{i}:v]"
@@ -118,9 +121,9 @@ def build_background(image_paths: list, output_path: str, total_duration: float,
             f"crop=800:1422,"
             f"setsar=1,"
             f"zoompan="
-            f"z='1.0+0.03*(on/{frames})':"
-            f"x='trunc(iw/2-(iw/zoom/2))':"
-            f"y='trunc(ih/2-(ih/zoom/2))':"
+            f"z='1+0.03*on/max(1,{frames}-1)':"
+            f"x='iw/2-(iw/zoom/2)':"
+            f"y='ih/2-(ih/zoom/2)':"
             f"d={frames}:"
             f"s={width}x{height}:"
             f"fps={fps},"
