@@ -117,11 +117,11 @@ def build_background(image_paths: list, output_path: str, total_duration: float,
 
         filter_parts.append(
             f"[{i}:v]"
-            f"scale=800:1422:force_original_aspect_ratio=increase,"
-            f"crop=800:1422,"
+            f"scale=900:1600:force_original_aspect_ratio=increase,"
+            f"crop=900:1600,"
             f"setsar=1,"
             f"zoompan="
-            f"'1+0.015*on/{frames}'"
+            f"z='1+0.015*on/{frames}'"
             f"x='iw/2-(iw/zoom/2)':"
             f"y='ih/2-(ih/zoom/2)':"
             f"d={frames}:"
