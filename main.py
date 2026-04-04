@@ -108,6 +108,8 @@ def build_background(image_paths: list, output_path: str, total_duration: float,
     filter_parts = []
     concat_inputs = ""
 
+
+
     for i in range(n):
         frames = max(1, int(round(clip_duration * fps)))
 
@@ -115,21 +117,30 @@ def build_background(image_paths: list, output_path: str, total_duration: float,
             f"[{i}:v]"
             f"scale=800:1422:force_original_aspect_ratio=increase,"
             f"zoompan="
-            f"z='1.0+0.04*(on/{frames})'
+            f"z='1.0+0.03*(on/{frames})':"
             f"x='iw/2-(iw/zoom/2)':"
             f"y='ih/2-(ih/zoom/2)':"
             f"d={frames}:"
             f"s=720x1280:"
             f"fps={fps},"
             f"setsar=1,"
-            f"format=yuv420p,"
-            f"trim=duration={clip_duration:.3f},"
-            f"setpts=PTS-STARTPTS"
-            f"[v{i}]"
+            f"format=yuv420p"
+            f"[v{i}]"    
         )
         concat_inputs += f"[v{i}]"
 
-    filter_parts.append(f"{concat_inputs}concat=n={n}:v=1:a=0[outv]")
+    if n == 1:
+    filter_parts.append("[v0]null[outv]")
+else:
+    last = "[v0]"
+    for i in range(1, n):
+        offset = clip_duration * i - fade_duration
+        filter_parts.append(
+            f"{last}[v{i}]xfade=transition=fade:duration={fade_duration}:offset={offset}[x{i}]"
+        )
+        last = f"[x{i}]"
+
+    filter_parts.append(f"{last}[outv]")
     filter_complex = ";".join(filter_parts)
 
     cmd = [
