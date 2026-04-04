@@ -90,8 +90,9 @@ def download_image(image_url: str, path: str) -> str:
 
 def build_background(image_paths: list, output_path: str, total_duration: float, job_id: str) -> None:
     """
-    Genera video de fondo con efecto Ken Burns simple por imagen
-    SIN transiciones fade/xfade.
+    Genera video de fondo con efecto Ken Burns (zoompan) por imagen.
+    Usa setpts=PTS-STARTPTS después de cada zoompan para resetear
+    timestamps antes del concat — sin esto, las imágenes se solapan.
     """
     n = len(image_paths)
     if n == 0:
@@ -112,14 +113,15 @@ def build_background(image_paths: list, output_path: str, total_duration: float,
         filter_parts.append(
             f"[{i}:v]"
             f"scale=800:1422:force_original_aspect_ratio=increase,"
+            f"crop=800:1422,setsar=1,"
             f"zoompan="
             f"z='1.0+0.03*(on/{frames})':"
-            f"x='iw/2-(iw/zoom/2)':"
-            f"y='ih/2-(ih/zoom/2)':"
+            f"x='trunc(iw/2-(iw/zoom/2))':"
+            f"y='trunc(ih/2-(ih/zoom/2))':"
             f"d={frames}:"
             f"s=720x1280:"
             f"fps={fps},"
-            f"setsar=1,"
+            f"setpts=PTS-STARTPTS,"
             f"format=yuv420p"
             f"[v{i}]"
         )
