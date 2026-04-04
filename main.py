@@ -114,20 +114,16 @@ def build_background(image_paths: list, output_path: str, total_duration: float,
 
         filter_parts.append(
             f"[{i}:v]"
-            f"scale={width}:{height}:force_original_aspect_ratio=increase,"
-            f"crop={width}:{height},"
-            f"zoompan="
-            f"z='floor((1.0+{zoom_step:.8f}*on)*1000)/1000':"
-            f"x='floor(iw/2-(iw/zoom/2))':"
-            f"y='floor(ih/2-(ih/zoom/2))':"
-            f"d={frames}:"
-            f"s={width}x{height}:"
+            f"scale=iw*1.08:ih*1.08,"
+            f"crop={width}:{height}:"
+            f"x='(iw-{width})/2 + (on/{frames})*20':"
+            f"y='(ih-{height})/2',"
             f"fps={fps},"
-            f"setsar=1,"
             f"format=yuv420p,"
+            f"setsar=1,"
             f"trim=duration={clip_duration:.3f},"
             f"setpts=PTS-STARTPTS"
-            f"[v{i}]"
+            f"[v{i}]"         
         )
 
     concat_inputs = "".join(f"[v{i}]" for i in range(n))
