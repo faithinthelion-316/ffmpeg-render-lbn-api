@@ -184,7 +184,7 @@ def build_title_only_filter(numero_regla: str) -> str:
             f"drawtext="
             f"fontfile='{safe_font_path}':"
             f"text='VERDAD':"
-            f"fontsize=54:"
+            f"fontsize=50:"
             f"fontcolor=white:"
             f"borderw=2:"
             f"bordercolor=black:"
@@ -197,7 +197,7 @@ def build_title_only_filter(numero_regla: str) -> str:
             f"drawtext="
             f"fontfile='{safe_font_path}':"
             f"text='#{numero_regla}':"
-            f"fontsize=90:"
+            f"fontsize=80:"
             f"fontcolor=0xE6C15A:"
             f"borderw=4:"
             f"bordercolor=black:"
@@ -425,7 +425,7 @@ ScaledBorderAndShadow: yes
 
 [V4+ Styles]
 Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
-Style: Default,Bebas Neue,90,&H00FFFFFF,&H00FFFFFF,&H00000000,&H64000000,-1,0,0,0,100,100,0,0,1,3,0,2,50,50,120,1
+Style: Default,Bebas Neue,80,&H00FFFFFF,&H00FFFFFF,&H00000000,&H64000000,-1,0,0,0,100,100,0,0,1,3,0,2,50,50,120,1
 
 [Events]
 Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
