@@ -422,7 +422,7 @@ def build_ass_dialogue_text(groups: list, active_index: int | None = None) -> st
                 parts.append(word_text)
         line_texts.append(" ".join(parts))
 
-    return r"{\an5\bord3\shad0\fscx100\fscy100\fsp0" + ASS_WHITE + r"}" + r"\N".join(line_texts)
+    return r"{\an2\bord3\shad0\fscx100\fscy100\fsp0" + ASS_WHITE + r"}" + r"\N".join(line_texts)
 
 
 def write_ass_subtitles(subtitles_path: str, cues: list):
