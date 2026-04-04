@@ -141,23 +141,24 @@ else:
         last = f"[x{i}]"
 
     filter_parts.append(f"{last}[outv]")
-    filter_complex = ";".join(filter_parts)
 
-    cmd = [
-        "ffmpeg",
-        "-hide_banner",
-        "-loglevel", "warning",
-        "-y",
-        *inputs,
-        "-filter_complex", filter_complex,
-        "-map", "[outv]",
-        "-c:v", "libx264",
-        "-preset", "ultrafast",
-        "-crf", "28",
-        "-pix_fmt", "yuv420p",
-        "-movflags", "+faststart",
-        output_path
-    ]
+filter_complex = ";".join(filter_parts)
+
+cmd = [
+    "ffmpeg",
+    "-hide_banner",
+    "-loglevel", "warning",
+    "-y",
+    *inputs,
+    "-filter_complex", filter_complex,
+    "-map", "[outv]",
+    "-c:v", "libx264",
+    "-preset", "ultrafast",
+    "-crf", "28",
+    "-pix_fmt", "yuv420p",
+    "-movflags", "+faststart",
+    output_path
+]
 
     print(f"[{job_id}] build_background cmd: {' '.join(cmd)}", flush=True)
     result = subprocess.run(cmd, capture_output=True, text=True)
