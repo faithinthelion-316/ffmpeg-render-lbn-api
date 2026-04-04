@@ -35,9 +35,8 @@ if os.path.exists(APP_FONT_FILE) and not os.path.exists(RUNTIME_FONT_FILE):
 
 app.mount("/video", StaticFiles(directory=VIDEO_DIR), name="video")
 
-# Mismo color para número y palabra activa
 ASS_WHITE = r"\c&HFFFFFF&"
-ASS_GOLD = r"\c&H5AC1E6&"   # equivalente ASS/BGR de 0xE6C15A
+ASS_GOLD = r"\c&H5AC1E6&"
 
 
 def escape_ffmpeg_path(path: str) -> str:
@@ -92,7 +91,7 @@ def download_image(image_url: str, path: str) -> str:
 def build_background(image_paths: list, output_path: str, total_duration: float, job_id: str) -> None:
     """
     Genera video de fondo con efecto Ken Burns suave por imagen
-    y concatena todos los segmentos.
+    y transiciones fade entre segmentos.
     """
     n = len(image_paths)
     if n == 0:
@@ -100,15 +99,13 @@ def build_background(image_paths: list, output_path: str, total_duration: float,
 
     fps = 24
     clip_duration = total_duration / n
+    fade_duration = 0.4
 
     inputs = []
     for img_path in image_paths:
         inputs.extend(["-loop", "1", "-t", f"{clip_duration:.3f}", "-i", img_path])
 
     filter_parts = []
-    concat_inputs = ""
-
-
 
     for i in range(n):
         frames = max(1, int(round(clip_duration * fps)))
@@ -125,40 +122,39 @@ def build_background(image_paths: list, output_path: str, total_duration: float,
             f"fps={fps},"
             f"setsar=1,"
             f"format=yuv420p"
-            f"[v{i}]"    
+            f"[v{i}]"
         )
-        concat_inputs += f"[v{i}]"
 
     if n == 1:
-    filter_parts.append("[v0]null[outv]")
-else:
-    last = "[v0]"
-    for i in range(1, n):
-        offset = clip_duration * i - fade_duration
-        filter_parts.append(
-            f"{last}[v{i}]xfade=transition=fade:duration={fade_duration}:offset={offset}[x{i}]"
-        )
-        last = f"[x{i}]"
+        filter_parts.append("[v0]null[outv]")
+    else:
+        last = "[v0]"
+        for i in range(1, n):
+            offset = clip_duration * i - fade_duration
+            filter_parts.append(
+                f"{last}[v{i}]xfade=transition=fade:duration={fade_duration}:offset={offset}[x{i}]"
+            )
+            last = f"[x{i}]"
 
-    filter_parts.append(f"{last}[outv]")
+        filter_parts.append(f"{last}[outv]")
 
-filter_complex = ";".join(filter_parts)
+    filter_complex = ";".join(filter_parts)
 
-cmd = [
-    "ffmpeg",
-    "-hide_banner",
-    "-loglevel", "warning",
-    "-y",
-    *inputs,
-    "-filter_complex", filter_complex,
-    "-map", "[outv]",
-    "-c:v", "libx264",
-    "-preset", "ultrafast",
-    "-crf", "28",
-    "-pix_fmt", "yuv420p",
-    "-movflags", "+faststart",
-    output_path
-]
+    cmd = [
+        "ffmpeg",
+        "-hide_banner",
+        "-loglevel", "warning",
+        "-y",
+        *inputs,
+        "-filter_complex", filter_complex,
+        "-map", "[outv]",
+        "-c:v", "libx264",
+        "-preset", "ultrafast",
+        "-crf", "28",
+        "-pix_fmt", "yuv420p",
+        "-movflags", "+faststart",
+        output_path
+    ]
 
     print(f"[{job_id}] build_background cmd: {' '.join(cmd)}", flush=True)
     result = subprocess.run(cmd, capture_output=True, text=True)
