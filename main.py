@@ -90,10 +90,8 @@ def download_image(image_url: str, path: str) -> str:
 
 def build_background(image_paths: list, output_path: str, total_duration: float, job_id: str) -> None:
     """
-    Genera video de fondo con efecto Ken Burns suave.
-    Pre-escala a 800x1422 (margen mínimo para zoom 4%),
-    zoompan con trunc() para evitar jitter subpíxel,
-    output directo a 720x1280.
+    Genera video de fondo con efecto Ken Burns simple por imagen
+    SIN transiciones fade/xfade.
     """
     n = len(image_paths)
     if n == 0:
@@ -114,15 +112,14 @@ def build_background(image_paths: list, output_path: str, total_duration: float,
         filter_parts.append(
             f"[{i}:v]"
             f"scale=800:1422:force_original_aspect_ratio=increase,"
-            f"crop=800:1422,"
-            f"setsar=1,"
             f"zoompan="
             f"z='1.0+0.03*(on/{frames})':"
-            f"x='trunc(iw/2-(iw/zoom/2))':"
-            f"y='trunc(ih/2-(ih/zoom/2))':"
+            f"x='iw/2-(iw/zoom/2)':"
+            f"y='ih/2-(ih/zoom/2)':"
             f"d={frames}:"
             f"s=720x1280:"
             f"fps={fps},"
+            f"setsar=1,"
             f"format=yuv420p"
             f"[v{i}]"
         )
