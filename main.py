@@ -90,8 +90,9 @@ def download_image(image_url: str, path: str) -> str:
 
 def build_background(image_paths: list, output_path: str, total_duration: float, job_id: str) -> None:
     """
-    Genera video de fondo con efecto Ken Burns simple por imagen
-    SIN transiciones fade/xfade.
+    Genera video de fondo con efecto Ken Burns suave por imagen.
+    Pre-escala a 1080x1920 para dar margen al zoom, luego zoompan
+    usa trunc() en x/y para forzar coordenadas enteras y evitar jitter.
     """
     n = len(image_paths)
     if n == 0:
@@ -106,20 +107,25 @@ def build_background(image_paths: list, output_path: str, total_duration: float,
 
     filter_parts = []
 
+    # Resolución interna grande para que zoompan tenga margen de píxeles
+    zp_w = 1080
+    zp_h = 1920
+
     for i in range(n):
         frames = max(1, int(round(clip_duration * fps)))
 
         filter_parts.append(
             f"[{i}:v]"
-            f"scale=800:1422:force_original_aspect_ratio=increase,"
+            f"scale={zp_w}:{zp_h}:force_original_aspect_ratio=increase,"
+            f"crop={zp_w}:{zp_h},"
+            f"setsar=1,"
             f"zoompan="
-            f"z='1.0+0.03*(on/{frames})':"
-            f"x='iw/2-(iw/zoom/2)':"
-            f"y='ih/2-(ih/zoom/2)':"
+            f"z='1.0+0.04*(on/{frames})':"
+            f"x='trunc(iw/2-(iw/zoom/2))':"
+            f"y='trunc(ih/2-(ih/zoom/2))':"
             f"d={frames}:"
             f"s=720x1280:"
             f"fps={fps},"
-            f"setsar=1,"
             f"format=yuv420p"
             f"[v{i}]"
         )
