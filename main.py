@@ -121,7 +121,7 @@ def build_background(image_paths: list, output_path: str, total_duration: float,
             f"crop=800:1422,"
             f"setsar=1,"
             f"zoompan="
-            f"z='1+0.03*on/max(1,{frames}-1)':"
+            f"'1+0.015*on/{frames}'"
             f"x='iw/2-(iw/zoom/2)':"
             f"y='ih/2-(ih/zoom/2)':"
             f"d={frames}:"
