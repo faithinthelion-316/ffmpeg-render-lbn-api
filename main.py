@@ -110,16 +110,16 @@ def build_background(image_paths: list, output_path: str, total_duration: float,
 
     for i in range(n):
         frames = max(1, int(round(clip_duration * fps)))
-        zoom_step = 0.03 / frames if frames > 0 else 0.0
+        zoom_step = 0.06 / frames if frames > 0 else 0.0
 
         filter_parts.append(
             f"[{i}:v]"
             f"scale={width}:{height}:force_original_aspect_ratio=increase,"
             f"crop={width}:{height},"
             f"zoompan="
-            f"z='1.0+{zoom_step:.8f}*on':"
-            f"x='iw/2-(iw/zoom/2)':"
-            f"y='ih/2-(ih/zoom/2)':"
+            f"z='floor((1.0+{zoom_step:.8f}*on)*1000)/1000'
+            f"x='floor(iw/2-(iw/zoom/2))'
+            f"y='floor(ih/2-(ih/zoom/2))'
             f"d={frames}:"
             f"s={width}x{height}:"
             f"fps={fps},"
