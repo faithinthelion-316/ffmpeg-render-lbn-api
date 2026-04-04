@@ -191,7 +191,7 @@ def build_title_only_filter(numero_regla: str) -> str:
             f"shadowx=1:"
             f"shadowy=1:"
             f"x=(w-text_w)/2:"
-            f"y=h*0.20"
+            f"y=h*0.15"
         ),
         (
             f"drawtext="
@@ -204,7 +204,7 @@ def build_title_only_filter(numero_regla: str) -> str:
             f"shadowx=2:"
             f"shadowy=2:"
             f"x=(w-text_w)/2:"
-            f"y=h*0.25"
+            f"y=h*0.20"
         ),
     ]
 
