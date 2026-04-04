@@ -103,7 +103,7 @@ def build_background(image_paths: list, output_path: str, total_duration: float,
 
     inputs = []
     for img_path in image_paths:
-        inputs.extend(["-loop", "1", "-t", f"{clip_duration:.3f}", "-i", img_path])
+        inputs.extend(["-loop", "1", "-i", img_path])
 
     filter_parts = []
 
