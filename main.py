@@ -204,10 +204,10 @@ def build_title_only_filter(numero_regla: str) -> str:
             f"text='#{numero_regla}':"
             f"fontsize=80:"
             f"fontcolor=0xE6C15A:"
-            f"borderw=4:"
+            f"borderw=2:"
             f"bordercolor=black:"
-            f"shadowx=2:"
-            f"shadowy=2:"
+            f"shadowx=1:"
+            f"shadowy=1:"
             f"x=(w-text_w)/2:"
             f"y=h*0.20"
         ),
