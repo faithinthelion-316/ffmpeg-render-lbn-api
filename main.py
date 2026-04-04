@@ -90,16 +90,14 @@ def download_image(image_url: str, path: str) -> str:
 
 def build_background(image_paths: list, output_path: str, total_duration: float, job_id: str) -> None:
     """
-    Genera video de fondo con efecto Ken Burns suave por imagen
-    SIN transiciones fade/xfade, usando concat estable.
+    Genera video de fondo con efecto Ken Burns simple por imagen
+    SIN transiciones fade/xfade.
     """
     n = len(image_paths)
     if n == 0:
         raise RuntimeError("No image paths received")
 
     fps = 24
-    width = 720
-    height = 1280
     clip_duration = total_duration / n
 
     inputs = []
@@ -110,24 +108,27 @@ def build_background(image_paths: list, output_path: str, total_duration: float,
 
     for i in range(n):
         frames = max(1, int(round(clip_duration * fps)))
-        zoom_step = 0.06 / frames if frames > 0 else 0.0
 
         filter_parts.append(
             f"[{i}:v]"
-            f"scale=iw*1.08:ih*1.08,"
-            f"crop={width}:{height}:"
-            f"x='(iw-{width})/2 + (on/{frames})*20':"
-            f"y='(ih-{height})/2',"
+            f"scale=800:1422:force_original_aspect_ratio=increase,"
+            f"zoompan="
+            f"z='1.0+0.03*(on/{frames})':"
+            f"x='iw/2-(iw/zoom/2)':"
+            f"y='ih/2-(ih/zoom/2)':"
+            f"d={frames}:"
+            f"s=720x1280:"
             f"fps={fps},"
-            f"format=yuv420p,"
             f"setsar=1,"
-            f"trim=duration={clip_duration:.3f},"
-            f"setpts=PTS-STARTPTS"
-            f"[v{i}]"         
+            f"format=yuv420p"
+            f"[v{i}]"
         )
 
-    concat_inputs = "".join(f"[v{i}]" for i in range(n))
-    filter_parts.append(f"{concat_inputs}concat=n={n}:v=1:a=0[outv]")
+    if n == 1:
+        filter_parts.append("[v0]null[outv]")
+    else:
+        concat_inputs = "".join(f"[v{i}]" for i in range(n))
+        filter_parts.append(f"{concat_inputs}concat=n={n}:v=1:a=0[outv]")
 
     filter_complex = ";".join(filter_parts)
 
@@ -142,7 +143,6 @@ def build_background(image_paths: list, output_path: str, total_duration: float,
         "-c:v", "libx264",
         "-preset", "ultrafast",
         "-crf", "28",
-        "-r", str(fps),
         "-pix_fmt", "yuv420p",
         "-movflags", "+faststart",
         output_path
