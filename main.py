@@ -523,6 +523,8 @@ class RenderRequest(BaseModel):
     image_url: str = ""
     image_url_2: str = ""
     image_url_3: str = ""
+    image_url_4: str = ""
+    image_url_5: str = ""
 
 
 @app.post("/render")
@@ -615,10 +617,10 @@ async def render_video(data: RenderRequest):
     safe_fonts_dir = escape_ffmpeg_path(FONTS_DIR)
 
     image_urls = []
-    for url in [data.image_url, data.image_url_2, data.image_url_3]:
+    for url in [data.image_url, data.image_url_2, data.image_url_3, data.image_url_4, data.image_url_5]:
         if url and url.strip():
             image_urls.append(url.strip())
-
+            
     use_images = len(image_urls) > 0
     render_mode = "black_background"
     images_used = 0
