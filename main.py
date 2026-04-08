@@ -188,7 +188,7 @@ def build_title_only_filter(numero_regla: str) -> str:
         (
             f"drawtext="
             f"fontfile='{safe_font_path}':"
-            f"text='':"
+            f"text='VERDAD':"
             f"fontsize=50:"
             f"fontcolor=white:"
             f"borderw=2:"
@@ -201,7 +201,7 @@ def build_title_only_filter(numero_regla: str) -> str:
         (
             f"drawtext="
             f"fontfile='{safe_font_path}':"
-            f"text='{numero_regla}':"
+            f"text='#{numero_regla}':"
             f"fontsize=80:"
             f"fontcolor=0xE6C15A:"
             f"borderw=2:"
@@ -523,8 +523,6 @@ class RenderRequest(BaseModel):
     image_url: str = ""
     image_url_2: str = ""
     image_url_3: str = ""
-    image_url_4: str = ""
-    image_url_5: str = ""
 
 
 @app.post("/render")
@@ -617,10 +615,10 @@ async def render_video(data: RenderRequest):
     safe_fonts_dir = escape_ffmpeg_path(FONTS_DIR)
 
     image_urls = []
-    for url in [data.image_url, data.image_url_2, data.image_url_3, data.image_url_4, data.image_url_5]:
+    for url in [data.image_url, data.image_url_2, data.image_url_3]:
         if url and url.strip():
             image_urls.append(url.strip())
-            
+
     use_images = len(image_urls) > 0
     render_mode = "black_background"
     images_used = 0
