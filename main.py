@@ -188,7 +188,7 @@ def build_title_only_filter(numero_regla: str) -> str:
         (
             f"drawtext="
             f"fontfile='{safe_font_path}':"
-            f"text='VERDAD':"
+            f"text='SANTA BIBLIA':"
             f"fontsize=50:"
             f"fontcolor=white:"
             f"borderw=2:"
