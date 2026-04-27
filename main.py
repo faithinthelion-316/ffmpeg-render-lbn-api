@@ -90,12 +90,12 @@ def download_image(image_url: str, path: str) -> str:
 
 def build_background(image_paths: list, output_path: str, total_duration: float, job_id: str) -> None:
     """
-    Genera video de fondo con efecto Ken Burns suave por imagen
-    SIN transiciones fade/xfade, usando concat estable.
+    Genera video de fondo con efecto Ken Burns SUAVE y VISIBLE.
 
-    Ajuste anti-jitter:
-    - elimina trunc() en x/y
-    - usa una progresión de zoom más estable por frame
+    Cambios anti-jitter:
+    - Zoom de 1.0 a 1.10 (10%) para que sea visible, no temblor
+    - Zoompan renderiza a 1080x1920 y luego se hace downscale a 720x1280
+      con bicubic, lo que SUAVIZA los saltos sub-pixel del zoompan.
     """
     n = len(image_paths)
     if n == 0:
@@ -104,6 +104,9 @@ def build_background(image_paths: list, output_path: str, total_duration: float,
     fps = 24
     width = 720
     height = 1280
+    # Zoompan se renderiza a 1.5x para anti-jitter, luego baja a 720x1280
+    zp_width = 1080
+    zp_height = 1920
     clip_duration = total_duration / n
 
     inputs = []
@@ -121,12 +124,13 @@ def build_background(image_paths: list, output_path: str, total_duration: float,
             f"crop=800:1422,"
             f"setsar=1,"
             f"zoompan="
-            f"z='1+0.015*on/{frames}':"
+            f"z='1+0.10*on/{frames}':"
             f"x='iw/2-(iw/zoom/2)':"
             f"y='ih/2-(ih/zoom/2)':"
             f"d={frames}:"
-            f"s={width}x{height}:"
+            f"s={zp_width}x{zp_height}:"
             f"fps={fps},"
+            f"scale={width}:{height}:flags=bicubic,"
             f"setpts=PTS-STARTPTS,"
             f"format=yuv420p"
             f"[v{i}]"
@@ -662,8 +666,15 @@ async def render_video(data: RenderRequest):
             ]
 
         except Exception as e:
-            use_images = False
-            render_mode = f"fallback_{str(e)[:100]}"
+            # MODO DEBUG TEMPORAL: lanza el error en lugar de caer silenciosamente
+            # a fondo negro. Cuando confirmes que el zoom funciona bien,
+            # vuelve a poner:
+            #     use_images = False
+            #     render_mode = f"fallback_{str(e)[:100]}"
+            raise HTTPException(
+                status_code=500,
+                detail=f"build_background falló: {str(e)}"
+            )
 
     if not use_images:
         video_filter = f"{title_filter},subtitles='{safe_subtitles_path}':fontsdir='{safe_fonts_dir}'"
