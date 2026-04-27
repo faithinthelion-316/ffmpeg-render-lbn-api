@@ -18,6 +18,7 @@ AUDIO_DIR = os.path.join(BASE_DIR, "audio")
 VIDEO_DIR = os.path.join(BASE_DIR, "video")
 FONTS_DIR = os.path.join(BASE_DIR, "fonts")
 IMAGE_DIR = os.path.join(BASE_DIR, "images")
+CLIPS_DIR = os.path.join(BASE_DIR, "clips")
 
 MUSIC_FILE = "/app/music/background.mp3"
 
@@ -25,6 +26,7 @@ os.makedirs(AUDIO_DIR, exist_ok=True)
 os.makedirs(VIDEO_DIR, exist_ok=True)
 os.makedirs(FONTS_DIR, exist_ok=True)
 os.makedirs(IMAGE_DIR, exist_ok=True)
+os.makedirs(CLIPS_DIR, exist_ok=True)
 
 APP_FONTS_DIR = "/app/fonts"
 APP_FONT_FILE = os.path.join(APP_FONTS_DIR, "BebasNeue-Regular.ttf")
@@ -83,19 +85,91 @@ def get_audio_duration(audio_path: str) -> float:
     return 8.0
 
 
-def download_image(image_url: str, path: str) -> str:
-    urllib.request.urlretrieve(image_url, path)
+def download_file(url: str, path: str) -> str:
+    """Descarga cualquier archivo (imagen o video) desde URL."""
+    urllib.request.urlretrieve(url, path)
     return path
 
 
-def build_background(image_paths: list, output_path: str, total_duration: float, job_id: str) -> None:
+def build_background_from_videos(
+    clip_paths: list,
+    output_path: str,
+    total_duration: float,
+    job_id: str
+) -> None:
     """
-    Genera video de fondo con efecto Ken Burns SUAVE y VISIBLE.
+    Concatena clips de video AI (Kling, etc) y los ajusta a 720x1280.
+    Cada clip de Kling viene en ~5 segundos. Si tu audio dura 30s y tienes
+    3 clips, cada uno se distribuye en el tiempo.
+    """
+    n = len(clip_paths)
+    if n == 0:
+        raise RuntimeError("No clip paths received")
 
-    Cambios anti-jitter:
-    - Zoom de 1.0 a 1.10 (10%) para que sea visible, no temblor
-    - Zoompan renderiza a 1080x1920 y luego se hace downscale a 720x1280
-      con bicubic, lo que SUAVIZA los saltos sub-pixel del zoompan.
+    width = 720
+    height = 1280
+    fps = 24
+
+    inputs = []
+    for clip_path in clip_paths:
+        inputs.extend(["-i", clip_path])
+
+    filter_parts = []
+
+    for i in range(n):
+        filter_parts.append(
+            f"[{i}:v]"
+            f"scale={width}:{height}:force_original_aspect_ratio=increase,"
+            f"crop={width}:{height},"
+            f"setsar=1,"
+            f"fps={fps},"
+            f"setpts=PTS-STARTPTS,"
+            f"format=yuv420p"
+            f"[v{i}]"
+        )
+
+    concat_inputs = "".join(f"[v{i}]" for i in range(n))
+    filter_parts.append(f"{concat_inputs}concat=n={n}:v=1:a=0[outv]")
+
+    filter_complex = ";".join(filter_parts)
+
+    cmd = [
+        "ffmpeg",
+        "-hide_banner",
+        "-loglevel", "warning",
+        "-y",
+        *inputs,
+        "-filter_complex", filter_complex,
+        "-map", "[outv]",
+        "-c:v", "libx264",
+        "-preset", "ultrafast",
+        "-crf", "23",
+        "-pix_fmt", "yuv420p",
+        "-r", str(fps),
+        "-movflags", "+faststart",
+        output_path
+    ]
+
+    print(f"[{job_id}] build_background_from_videos cmd: {' '.join(cmd)}", flush=True)
+    result = subprocess.run(cmd, capture_output=True, text=True)
+
+    if result.returncode != 0:
+        print(f"[{job_id}] build_background_from_videos stderr: {result.stderr}", flush=True)
+        raise RuntimeError(f"build_background_from_videos failed: {result.stderr}")
+
+    if not os.path.exists(output_path):
+        raise RuntimeError("output background not created")
+
+
+def build_background_from_images(
+    image_paths: list,
+    output_path: str,
+    total_duration: float,
+    job_id: str
+) -> None:
+    """
+    Versión legacy: aplica Ken Burns a imágenes estáticas.
+    Se mantiene por compatibilidad y como fallback.
     """
     n = len(image_paths)
     if n == 0:
@@ -104,7 +178,6 @@ def build_background(image_paths: list, output_path: str, total_duration: float,
     fps = 24
     width = 720
     height = 1280
-    # Zoompan se renderiza a 1.5x para anti-jitter, luego baja a 720x1280
     zp_width = 1080
     zp_height = 1920
     clip_duration = total_duration / n
@@ -157,26 +230,15 @@ def build_background(image_paths: list, output_path: str, total_duration: float,
         output_path
     ]
 
-    print(f"[{job_id}] build_background cmd: {' '.join(cmd)}", flush=True)
+    print(f"[{job_id}] build_background_from_images cmd: {' '.join(cmd)}", flush=True)
     result = subprocess.run(cmd, capture_output=True, text=True)
 
     if result.returncode != 0:
-        print(f"[{job_id}] build_background stderr: {result.stderr}", flush=True)
-        raise RuntimeError(f"build_background failed: {result.stderr}")
+        print(f"[{job_id}] build_background_from_images stderr: {result.stderr}", flush=True)
+        raise RuntimeError(f"build_background_from_images failed: {result.stderr}")
 
     if not os.path.exists(output_path):
         raise RuntimeError("output background not created")
-
-    probe_result = subprocess.run(
-        [
-            "ffprobe", "-v", "error", "-show_entries", "format=duration",
-            "-of", "default=noprint_wrappers=1:nokey=1", output_path
-        ],
-        capture_output=True, text=True
-    )
-    bg_duration = probe_result.stdout.strip()
-    print(f"[{job_id}] Background video duration: {bg_duration}s (expected: {total_duration:.3f}s)", flush=True)
-    print(f"[{job_id}] Images: {n}, clip_duration: {clip_duration:.3f}s each", flush=True)
 
 
 def build_title_only_filter(numero_regla: str) -> str:
@@ -524,6 +586,11 @@ class RenderRequest(BaseModel):
     subtitles_mode: str = "dynamic"
     audio_base64: str
     normalized_alignment: dict
+    # NUEVOS CAMPOS PARA VIDEOS AI (Kling/Runway/etc):
+    video_url: str = ""
+    video_url_2: str = ""
+    video_url_3: str = ""
+    # CAMPOS LEGACY (imagenes estaticas) - se mantienen como fallback:
     image_url: str = ""
     image_url_2: str = ""
     image_url_3: str = ""
@@ -618,30 +685,82 @@ async def render_video(data: RenderRequest):
     safe_subtitles_path = escape_ffmpeg_path(subtitles_path)
     safe_fonts_dir = escape_ffmpeg_path(FONTS_DIR)
 
+    # PRIORIDAD 1: Videos AI (Kling). Si vienen video_url los usamos.
+    video_urls = []
+    for url in [data.video_url, data.video_url_2, data.video_url_3]:
+        if url and url.strip():
+            video_urls.append(url.strip())
+
+    # PRIORIDAD 2: Imagenes estaticas con Ken Burns (legacy)
     image_urls = []
     for url in [data.image_url, data.image_url_2, data.image_url_3]:
         if url and url.strip():
             image_urls.append(url.strip())
 
-    use_images = len(image_urls) > 0
+    use_videos = len(video_urls) > 0
+    use_images = (not use_videos) and len(image_urls) > 0
     render_mode = "black_background"
-    images_used = 0
+    media_count = 0
 
-    if use_images:
+    if use_videos:
+        try:
+            clip_paths = []
+            for i, url in enumerate(video_urls):
+                clip_path = os.path.join(CLIPS_DIR, f"{job_id}_clip{i}.mp4")
+                download_file(url, clip_path)
+                clip_paths.append(clip_path)
+
+            bg_video_path = os.path.join(CLIPS_DIR, f"{job_id}_bg.mp4")
+            build_background_from_videos(clip_paths, bg_video_path, audio_duration, job_id)
+
+            overlay_filter = "colorchannelmixer=rr=0.75:gg=0.75:bb=0.75"
+            video_filter = f"{overlay_filter},{title_filter},subtitles='{safe_subtitles_path}':fontsdir='{safe_fonts_dir}'"
+            render_mode = f"ai_video_{len(clip_paths)}"
+            media_count = len(clip_paths)
+
+            ffmpeg_cmd = [
+                "ffmpeg",
+                "-hide_banner",
+                "-loglevel", "error",
+                "-y",
+                "-i", bg_video_path,
+                "-i", normalized_audio_path,
+                "-vf", video_filter,
+                "-map", "0:v:0",
+                "-map", "1:a:0",
+                "-c:v", "libx264",
+                "-preset", "ultrafast",
+                "-crf", "26",
+                "-c:a", "aac",
+                "-b:a", "128k",
+                "-ar", "44100",
+                "-pix_fmt", "yuv420p",
+                "-movflags", "+faststart",
+                "-shortest",
+                video_path
+            ]
+
+        except Exception as e:
+            raise HTTPException(
+                status_code=500,
+                detail=f"build_background_from_videos fallo: {str(e)}"
+            )
+
+    elif use_images:
         try:
             image_paths = []
             for i, url in enumerate(image_urls):
                 img_path = os.path.join(IMAGE_DIR, f"{job_id}_img{i}.jpg")
-                download_image(url, img_path)
+                download_file(url, img_path)
                 image_paths.append(img_path)
 
             bg_video_path = os.path.join(IMAGE_DIR, f"{job_id}_bg.mp4")
-            build_background(image_paths, bg_video_path, audio_duration, job_id)
+            build_background_from_images(image_paths, bg_video_path, audio_duration, job_id)
 
             overlay_filter = "colorchannelmixer=rr=0.70:gg=0.70:bb=0.70"
             video_filter = f"{overlay_filter},{title_filter},subtitles='{safe_subtitles_path}':fontsdir='{safe_fonts_dir}'"
-            render_mode = f"multi_image_{len(image_paths)}"
-            images_used = len(image_paths)
+            render_mode = f"static_image_{len(image_paths)}"
+            media_count = len(image_paths)
 
             ffmpeg_cmd = [
                 "ffmpeg",
@@ -666,17 +785,12 @@ async def render_video(data: RenderRequest):
             ]
 
         except Exception as e:
-            # MODO DEBUG TEMPORAL: lanza el error en lugar de caer silenciosamente
-            # a fondo negro. Cuando confirmes que el zoom funciona bien,
-            # vuelve a poner:
-            #     use_images = False
-            #     render_mode = f"fallback_{str(e)[:100]}"
             raise HTTPException(
                 status_code=500,
-                detail=f"build_background falló: {str(e)}"
+                detail=f"build_background_from_images fallo: {str(e)}"
             )
 
-    if not use_images:
+    else:
         video_filter = f"{title_filter},subtitles='{safe_subtitles_path}':fontsdir='{safe_fonts_dir}'"
 
         ffmpeg_cmd = [
@@ -720,7 +834,7 @@ async def render_video(data: RenderRequest):
         raise HTTPException(
             status_code=500,
             detail={
-                "message": "El video no se generó",
+                "message": "El video no se genero",
                 "render_mode": render_mode,
             }
         )
@@ -735,5 +849,5 @@ async def render_video(data: RenderRequest):
         "cues_count": len(cues),
         "speed_factor": speed_factor,
         "music_used": os.path.exists(MUSIC_FILE),
-        "images_used": images_used
+        "media_count": media_count
     }
