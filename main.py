@@ -52,6 +52,19 @@ def escape_ffmpeg_path(path: str) -> str:
     )
 
 
+def escape_drawtext_value(value: str) -> str:
+    """Escapa caracteres especiales para el campo text= de drawtext."""
+    if not value:
+        return ""
+    return (
+        str(value)
+        .replace("\\", "\\\\")
+        .replace(":", "\\:")
+        .replace("'", "\\'")
+        .replace("%", "\\%")
+    )
+
+
 def get_audio_duration(audio_path: str) -> float:
     probes = [
         [
@@ -239,45 +252,39 @@ def build_background_from_images(
         raise RuntimeError("output background not created")
 
 
-def build_title_only_filter(numero_regla: str) -> str:
+def build_reference_filter(referencia_biblica: str) -> str:
+    """
+    Construye el drawtext de la referencia biblica.
+    Aparece pequena, en gris claro, debajo del area de subtitulos.
+    Solo se dibuja si referencia_biblica no esta vacia.
+    """
+    if not referencia_biblica or not referencia_biblica.strip():
+        return ""
+
     if not os.path.exists(RUNTIME_FONT_FILE):
-        raise HTTPException(
-            status_code=500,
-            detail=f"No se encontró la fuente en {RUNTIME_FONT_FILE}"
-        )
+        return ""
 
     safe_font_path = escape_ffmpeg_path(RUNTIME_FONT_FILE)
+    safe_text = escape_drawtext_value(referencia_biblica.strip())
 
-    filters = [
-        (
-            f"drawtext="
-            f"fontfile='{safe_font_path}':"
-            f"text='VERDAD':"
-            f"fontsize=50:"
-            f"fontcolor=white:"
-            f"borderw=2:"
-            f"bordercolor=black:"
-            f"shadowx=1:"
-            f"shadowy=1:"
-            f"x=(w-text_w)/2:"
-            f"y=h*0.15"
-        ),
-        (
-            f"drawtext="
-            f"fontfile='{safe_font_path}':"
-            f"text='#{numero_regla}':"
-            f"fontsize=80:"
-            f"fontcolor=0xE6C15A:"
-            f"borderw=2:"
-            f"bordercolor=black:"
-            f"shadowx=1:"
-            f"shadowy=1:"
-            f"x=(w-text_w)/2:"
-            f"y=h*0.20"
-        ),
-    ]
+    if not safe_text:
+        return ""
 
-    return ",".join(filters)
+    # Color gris claro #B8B8B8 con borde negro suave
+    # y=h*0.82 = debajo del area de subtitulos
+    return (
+        f"drawtext="
+        f"fontfile='{safe_font_path}':"
+        f"text='{safe_text}':"
+        f"fontsize=36:"
+        f"fontcolor=0xB8B8B8:"
+        f"borderw=2:"
+        f"bordercolor=black:"
+        f"shadowx=1:"
+        f"shadowy=1:"
+        f"x=(w-text_w)/2:"
+        f"y=h*0.82"
+    )
 
 
 def seconds_to_ass_time(seconds: float) -> str:
@@ -578,12 +585,14 @@ def health():
 
 
 class RenderRequest(BaseModel):
-    numero_regla: str
+    numero_regla: str = ""
     hook: str = ""
     guion: str
     subtitles_mode: str = "dynamic"
     audio_base64: str
     normalized_alignment: dict
+    # Referencia biblica que aparece pequena debajo del subtitulo:
+    referencia_biblica: str = ""
     # Videos AI (Kling/Runway/etc) - hasta 5:
     video_url: str = ""
     video_url_2: str = ""
@@ -683,9 +692,25 @@ async def render_video(data: RenderRequest):
     cues = group_words_into_cues(words, max_words=6, max_chars=40)
     write_ass_subtitles(subtitles_path, cues)
 
-    title_filter = build_title_only_filter(data.numero_regla)
     safe_subtitles_path = escape_ffmpeg_path(subtitles_path)
     safe_fonts_dir = escape_ffmpeg_path(FONTS_DIR)
+
+    # Construir filtro de referencia biblica (vacio si no hay referencia)
+    reference_filter = build_reference_filter(data.referencia_biblica)
+
+    def compose_video_filter(prefix_filter: str = "") -> str:
+        """
+        Une los filtros en el orden: overlay -> referencia -> subtitulos
+        Si no hay overlay, empieza directo con referencia o subtitulos.
+        Si no hay referencia, salta ese paso.
+        """
+        parts = []
+        if prefix_filter:
+            parts.append(prefix_filter)
+        if reference_filter:
+            parts.append(reference_filter)
+        parts.append(f"subtitles='{safe_subtitles_path}':fontsdir='{safe_fonts_dir}'")
+        return ",".join(parts)
 
     # PRIORIDAD 1: Videos AI (Kling). Si vienen video_url los usamos.
     video_urls = []
@@ -728,7 +753,7 @@ async def render_video(data: RenderRequest):
             build_background_from_videos(clip_paths, bg_video_path, audio_duration, job_id)
 
             overlay_filter = "colorchannelmixer=rr=0.75:gg=0.75:bb=0.75"
-            video_filter = f"{overlay_filter},{title_filter},subtitles='{safe_subtitles_path}':fontsdir='{safe_fonts_dir}'"
+            video_filter = compose_video_filter(overlay_filter)
             render_mode = f"ai_video_{len(clip_paths)}"
             media_count = len(clip_paths)
 
@@ -772,7 +797,7 @@ async def render_video(data: RenderRequest):
             build_background_from_images(image_paths, bg_video_path, audio_duration, job_id)
 
             overlay_filter = "colorchannelmixer=rr=0.70:gg=0.70:bb=0.70"
-            video_filter = f"{overlay_filter},{title_filter},subtitles='{safe_subtitles_path}':fontsdir='{safe_fonts_dir}'"
+            video_filter = compose_video_filter(overlay_filter)
             render_mode = f"static_image_{len(image_paths)}"
             media_count = len(image_paths)
 
@@ -805,7 +830,7 @@ async def render_video(data: RenderRequest):
             )
 
     else:
-        video_filter = f"{title_filter},subtitles='{safe_subtitles_path}':fontsdir='{safe_fonts_dir}'"
+        video_filter = compose_video_filter()
 
         ffmpeg_cmd = [
             "ffmpeg",
@@ -863,5 +888,6 @@ async def render_video(data: RenderRequest):
         "cues_count": len(cues),
         "speed_factor": speed_factor,
         "music_used": os.path.exists(MUSIC_FILE),
-        "media_count": media_count
+        "media_count": media_count,
+        "referencia_biblica_used": bool(data.referencia_biblica and data.referencia_biblica.strip())
     }
