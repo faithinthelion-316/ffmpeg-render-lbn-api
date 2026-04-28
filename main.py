@@ -819,7 +819,7 @@ async def render_video(data: RenderRequest):
             bg_video_path = os.path.join(CLIPS_DIR, f"{job_id}_bg.mp4")
             build_background_from_videos(clip_paths, bg_video_path, audio_duration, job_id)
 
-            overlay_filter = "colorchannelmixer=rr=0.75:gg=0.75:bb=0.75"
+            overlay_filter = ""
             video_filter = compose_video_filter(overlay_filter)
             render_mode = f"ai_video_{len(clip_paths)}"
             media_count = len(clip_paths)
