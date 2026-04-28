@@ -22,6 +22,10 @@ CLIPS_DIR = os.path.join(BASE_DIR, "clips")
 
 MUSIC_FILE = "/app/music/background.mp3"
 
+# Segundos extra al final del video (con musica de fondo, sin voz)
+# para dar safe zone de cierre y que el ultimo subtitulo respire
+END_TAIL_DURATION = 1.5
+
 os.makedirs(AUDIO_DIR, exist_ok=True)
 os.makedirs(VIDEO_DIR, exist_ok=True)
 os.makedirs(FONTS_DIR, exist_ok=True)
@@ -114,6 +118,7 @@ def build_background_from_videos(
     Concatena clips de video AI (Kling, etc) y los ajusta a 720x1280.
     Si la duracion total de los clips es MENOR que el audio, extiende el
     ultimo clip congelando su ultimo frame hasta que coincida con el audio.
+    El parametro total_duration ya incluye el END_TAIL_DURATION extra.
     """
     n = len(clip_paths)
     if n == 0:
@@ -130,13 +135,13 @@ def build_background_from_videos(
 
     print(
         f"[{job_id}] clips_total_duration={clips_total_duration:.2f}s, "
-        f"audio_duration={total_duration:.2f}s",
+        f"target_duration={total_duration:.2f}s",
         flush=True,
     )
 
-    # Si los clips no cubren toda la duracion del audio, extender el
-    # ultimo frame con tpad para evitar que el video se corte antes del audio
-    extra_duration = max(0.0, total_duration - clips_total_duration + 0.5)
+    # Si los clips no cubren toda la duracion target, extender el
+    # ultimo frame con tpad para evitar que el video se corte antes
+    extra_duration = max(0.0, total_duration - clips_total_duration + 0.3)
 
     inputs = []
     for clip_path in clip_paths:
@@ -159,7 +164,7 @@ def build_background_from_videos(
     concat_inputs = "".join(f"[v{i}]" for i in range(n))
 
     if extra_duration > 0.1:
-        # Concatenar clips + congelar ultimo frame con tpad para cubrir audio
+        # Concatenar clips + congelar ultimo frame con tpad
         filter_parts.append(
             f"{concat_inputs}concat=n={n}:v=1:a=0[concated]"
         )
@@ -168,7 +173,7 @@ def build_background_from_videos(
         )
         print(
             f"[{job_id}] extending last frame by {extra_duration:.2f}s "
-            f"to match audio",
+            f"to match target duration",
             flush=True,
         )
     else:
@@ -213,6 +218,7 @@ def build_background_from_images(
     """
     Versión legacy: aplica Ken Burns a imágenes estáticas.
     Se mantiene por compatibilidad y como fallback.
+    El parametro total_duration ya incluye el END_TAIL_DURATION extra.
     """
     n = len(image_paths)
     if n == 0:
@@ -612,7 +618,8 @@ def health():
         "font_exists": os.path.exists(RUNTIME_FONT_FILE),
         "font_path": RUNTIME_FONT_FILE,
         "music_exists": os.path.exists(MUSIC_FILE),
-        "music_path": MUSIC_FILE
+        "music_path": MUSIC_FILE,
+        "end_tail_duration": END_TAIL_DURATION
     }
 
 
@@ -651,6 +658,7 @@ async def render_video(data: RenderRequest):
 
     input_audio_path = os.path.join(AUDIO_DIR, f"{job_id}.mp3")
     normalized_audio_path = os.path.join(AUDIO_DIR, f"{job_id}_normalized.mp3")
+    padded_audio_path = os.path.join(AUDIO_DIR, f"{job_id}_padded.mp3")
     mixed_audio_path = os.path.join(AUDIO_DIR, f"{job_id}_mixed.mp3")
     subtitles_path = os.path.join(BASE_DIR, f"{job_id}.ass")
     video_path = os.path.join(VIDEO_DIR, f"{job_id}.mp4")
@@ -696,7 +704,39 @@ async def render_video(data: RenderRequest):
             }
         )
 
+    # Duracion del audio de voz (sin tail)
+    voice_duration = round(get_audio_duration(normalized_audio_path), 3)
+
+    # Agregar END_TAIL_DURATION segundos de silencio al final del audio
+    # de voz, asi cuando se mezcle con la musica, la musica seguira sonando
+    # mientras la voz queda en silencio
+    pad_cmd = [
+        "ffmpeg",
+        "-hide_banner",
+        "-loglevel", "error",
+        "-y",
+        "-i", normalized_audio_path,
+        "-af", f"apad=pad_dur={END_TAIL_DURATION}",
+        "-acodec", "libmp3lame",
+        "-ar", "44100",
+        "-ac", "2",
+        "-b:a", "192k",
+        padded_audio_path
+    ]
+
+    pad_result = subprocess.run(pad_cmd, capture_output=True, text=True)
+
+    if pad_result.returncode == 0 and os.path.exists(padded_audio_path):
+        normalized_audio_path = padded_audio_path
+        print(
+            f"[{job_id}] padded voice audio with {END_TAIL_DURATION}s of silence",
+            flush=True
+        )
+
     if os.path.exists(MUSIC_FILE):
+        # Mezclar musica de fondo con el audio de voz padded.
+        # duration=longest hace que el audio mezclado dure lo mismo que
+        # el voice padded (incluyendo los 1.5s de silencio al final con musica)
         mix_cmd = [
             "ffmpeg",
             "-hide_banner",
@@ -706,7 +746,7 @@ async def render_video(data: RenderRequest):
             "-i", MUSIC_FILE,
             "-i", normalized_audio_path,
             "-filter_complex",
-            "[0:a]volume=0.20[bg];[1:a]volume=1.4[voice];[bg][voice]amix=inputs=2:duration=shortest:dropout_transition=2",
+            "[0:a]volume=0.20[bg];[1:a]volume=1.4[voice];[bg][voice]amix=inputs=2:duration=longest:dropout_transition=2",
             "-c:a", "libmp3lame",
             "-b:a", "192k",
             mixed_audio_path
@@ -717,7 +757,15 @@ async def render_video(data: RenderRequest):
         if mix_result.returncode == 0 and os.path.exists(mixed_audio_path):
             normalized_audio_path = mixed_audio_path
 
+    # Duracion final del audio (voz + tail con musica)
     audio_duration = round(get_audio_duration(normalized_audio_path), 3)
+
+    print(
+        f"[{job_id}] voice_duration={voice_duration:.2f}s, "
+        f"final_audio_duration={audio_duration:.2f}s "
+        f"(includes {END_TAIL_DURATION}s music tail)",
+        flush=True
+    )
 
     adjusted_alignment = speed_up_alignment(data.normalized_alignment, speed_factor)
     words = build_words_from_alignment(adjusted_alignment)
@@ -914,7 +962,9 @@ async def render_video(data: RenderRequest):
         "ok": True,
         "video_url": f"/video/{job_id}.mp4",
         "video_url_full": f"{os.environ.get('BASE_URL', 'https://ffmpeg-render-api-production-1143.up.railway.app')}/video/{job_id}.mp4",
+        "voice_duration": voice_duration,
         "audio_duration": audio_duration,
+        "end_tail_duration": END_TAIL_DURATION,
         "subtitles_mode_received": data.subtitles_mode,
         "render_mode": render_mode,
         "cues_count": len(cues),
