@@ -116,9 +116,8 @@ def build_background_from_videos(
 ) -> None:
     """
     Concatena clips de video AI (Kling, etc) y los ajusta a 720x1280.
-    Si la duracion total de los clips es MENOR que el audio, extiende el
-    ultimo clip congelando su ultimo frame hasta que coincida con el audio.
-    El parametro total_duration ya incluye el END_TAIL_DURATION extra.
+    Si la duracion total de los clips es MENOR que el audio target, extiende
+    el ultimo clip congelando su ultimo frame para cubrir el audio entero.
     """
     n = len(clip_paths)
     if n == 0:
@@ -139,8 +138,7 @@ def build_background_from_videos(
         flush=True,
     )
 
-    # Si los clips no cubren toda la duracion target, extender el
-    # ultimo frame con tpad para evitar que el video se corte antes
+    # Si los clips no cubren la duracion target, extender ultimo frame
     extra_duration = max(0.0, total_duration - clips_total_duration + 0.3)
 
     inputs = []
@@ -172,8 +170,7 @@ def build_background_from_videos(
             f"[concated]tpad=stop_mode=clone:stop_duration={extra_duration:.2f}[outv]"
         )
         print(
-            f"[{job_id}] extending last frame by {extra_duration:.2f}s "
-            f"to match target duration",
+            f"[{job_id}] extending last frame by {extra_duration:.2f}s",
             flush=True,
         )
     else:
@@ -218,7 +215,6 @@ def build_background_from_images(
     """
     Versión legacy: aplica Ken Burns a imágenes estáticas.
     Se mantiene por compatibilidad y como fallback.
-    El parametro total_duration ya incluye el END_TAIL_DURATION extra.
     """
     n = len(image_paths)
     if n == 0:
@@ -658,7 +654,6 @@ async def render_video(data: RenderRequest):
 
     input_audio_path = os.path.join(AUDIO_DIR, f"{job_id}.mp3")
     normalized_audio_path = os.path.join(AUDIO_DIR, f"{job_id}_normalized.mp3")
-    padded_audio_path = os.path.join(AUDIO_DIR, f"{job_id}_padded.mp3")
     mixed_audio_path = os.path.join(AUDIO_DIR, f"{job_id}_mixed.mp3")
     subtitles_path = os.path.join(BASE_DIR, f"{job_id}.ass")
     video_path = os.path.join(VIDEO_DIR, f"{job_id}.mp4")
@@ -707,36 +702,15 @@ async def render_video(data: RenderRequest):
     # Duracion del audio de voz (sin tail)
     voice_duration = round(get_audio_duration(normalized_audio_path), 3)
 
-    # Agregar END_TAIL_DURATION segundos de silencio al final del audio
-    # de voz, asi cuando se mezcle con la musica, la musica seguira sonando
-    # mientras la voz queda en silencio
-    pad_cmd = [
-        "ffmpeg",
-        "-hide_banner",
-        "-loglevel", "error",
-        "-y",
-        "-i", normalized_audio_path,
-        "-af", f"apad=pad_dur={END_TAIL_DURATION}",
-        "-acodec", "libmp3lame",
-        "-ar", "44100",
-        "-ac", "2",
-        "-b:a", "192k",
-        padded_audio_path
-    ]
-
-    pad_result = subprocess.run(pad_cmd, capture_output=True, text=True)
-
-    if pad_result.returncode == 0 and os.path.exists(padded_audio_path):
-        normalized_audio_path = padded_audio_path
-        print(
-            f"[{job_id}] padded voice audio with {END_TAIL_DURATION}s of silence",
-            flush=True
-        )
+    # Duracion target del video final (voz + tail con musica)
+    target_duration = voice_duration + END_TAIL_DURATION
 
     if os.path.exists(MUSIC_FILE):
-        # Mezclar musica de fondo con el audio de voz padded.
-        # duration=longest hace que el audio mezclado dure lo mismo que
-        # el voice padded (incluyendo los 1.5s de silencio al final con musica)
+        # Mezcla todo en UN solo paso de FFmpeg:
+        # 1. Voz: padea con silencio END_TAIL_DURATION segundos al final
+        # 2. Musica: se loopea, se reduce volumen, dura lo mismo que la voz padded
+        # 3. amix con duration=longest para mantener la cola de musica
+        # Esto evita un paso intermedio de apad y ahorra tiempo significativo
         mix_cmd = [
             "ffmpeg",
             "-hide_banner",
@@ -746,7 +720,12 @@ async def render_video(data: RenderRequest):
             "-i", MUSIC_FILE,
             "-i", normalized_audio_path,
             "-filter_complex",
-            "[0:a]volume=0.20[bg];[1:a]volume=1.4[voice];[bg][voice]amix=inputs=2:duration=longest:dropout_transition=2",
+            (
+                f"[0:a]volume=0.20[bg];"
+                f"[1:a]apad=pad_dur={END_TAIL_DURATION},volume=1.4[voice];"
+                f"[bg][voice]amix=inputs=2:duration=shortest:dropout_transition=2"
+            ),
+            "-t", f"{target_duration:.2f}",
             "-c:a", "libmp3lame",
             "-b:a", "192k",
             mixed_audio_path
@@ -756,14 +735,22 @@ async def render_video(data: RenderRequest):
 
         if mix_result.returncode == 0 and os.path.exists(mixed_audio_path):
             normalized_audio_path = mixed_audio_path
+            print(
+                f"[{job_id}] mixed voice+music with {END_TAIL_DURATION}s tail",
+                flush=True
+            )
+        else:
+            print(
+                f"[{job_id}] mix failed: {mix_result.stderr}",
+                flush=True
+            )
 
     # Duracion final del audio (voz + tail con musica)
     audio_duration = round(get_audio_duration(normalized_audio_path), 3)
 
     print(
         f"[{job_id}] voice_duration={voice_duration:.2f}s, "
-        f"final_audio_duration={audio_duration:.2f}s "
-        f"(includes {END_TAIL_DURATION}s music tail)",
+        f"final_audio_duration={audio_duration:.2f}s",
         flush=True
     )
 
