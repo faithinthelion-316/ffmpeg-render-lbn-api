@@ -112,6 +112,8 @@ def build_background_from_videos(
 ) -> None:
     """
     Concatena clips de video AI (Kling, etc) y los ajusta a 720x1280.
+    Si la duracion total de los clips es MENOR que el audio, extiende el
+    ultimo clip congelando su ultimo frame hasta que coincida con el audio.
     """
     n = len(clip_paths)
     if n == 0:
@@ -120,6 +122,21 @@ def build_background_from_videos(
     width = 720
     height = 1280
     fps = 24
+
+    # Calcular la duracion total real de los clips concatenados
+    clips_total_duration = 0.0
+    for clip_path in clip_paths:
+        clips_total_duration += get_audio_duration(clip_path)
+
+    print(
+        f"[{job_id}] clips_total_duration={clips_total_duration:.2f}s, "
+        f"audio_duration={total_duration:.2f}s",
+        flush=True,
+    )
+
+    # Si los clips no cubren toda la duracion del audio, extender el
+    # ultimo frame con tpad para evitar que el video se corte antes del audio
+    extra_duration = max(0.0, total_duration - clips_total_duration + 0.5)
 
     inputs = []
     for clip_path in clip_paths:
@@ -140,7 +157,22 @@ def build_background_from_videos(
         )
 
     concat_inputs = "".join(f"[v{i}]" for i in range(n))
-    filter_parts.append(f"{concat_inputs}concat=n={n}:v=1:a=0[outv]")
+
+    if extra_duration > 0.1:
+        # Concatenar clips + congelar ultimo frame con tpad para cubrir audio
+        filter_parts.append(
+            f"{concat_inputs}concat=n={n}:v=1:a=0[concated]"
+        )
+        filter_parts.append(
+            f"[concated]tpad=stop_mode=clone:stop_duration={extra_duration:.2f}[outv]"
+        )
+        print(
+            f"[{job_id}] extending last frame by {extra_duration:.2f}s "
+            f"to match audio",
+            flush=True,
+        )
+    else:
+        filter_parts.append(f"{concat_inputs}concat=n={n}:v=1:a=0[outv]")
 
     filter_complex = ";".join(filter_parts)
 
