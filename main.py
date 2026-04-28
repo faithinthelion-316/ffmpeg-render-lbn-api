@@ -99,8 +99,6 @@ def build_background_from_videos(
 ) -> None:
     """
     Concatena clips de video AI (Kling, etc) y los ajusta a 720x1280.
-    Cada clip de Kling viene en ~5 segundos. Si tu audio dura 30s y tienes
-    3 clips, cada uno se distribuye en el tiempo.
     """
     n = len(clip_paths)
     if n == 0:
@@ -586,14 +584,18 @@ class RenderRequest(BaseModel):
     subtitles_mode: str = "dynamic"
     audio_base64: str
     normalized_alignment: dict
-    # NUEVOS CAMPOS PARA VIDEOS AI (Kling/Runway/etc):
+    # Videos AI (Kling/Runway/etc) - hasta 5:
     video_url: str = ""
     video_url_2: str = ""
     video_url_3: str = ""
-    # CAMPOS LEGACY (imagenes estaticas) - se mantienen como fallback:
+    video_url_4: str = ""
+    video_url_5: str = ""
+    # Imagenes estaticas (legacy fallback) - hasta 5:
     image_url: str = ""
     image_url_2: str = ""
     image_url_3: str = ""
+    image_url_4: str = ""
+    image_url_5: str = ""
 
 
 @app.post("/render")
@@ -687,13 +689,25 @@ async def render_video(data: RenderRequest):
 
     # PRIORIDAD 1: Videos AI (Kling). Si vienen video_url los usamos.
     video_urls = []
-    for url in [data.video_url, data.video_url_2, data.video_url_3]:
+    for url in [
+        data.video_url,
+        data.video_url_2,
+        data.video_url_3,
+        data.video_url_4,
+        data.video_url_5,
+    ]:
         if url and url.strip():
             video_urls.append(url.strip())
 
     # PRIORIDAD 2: Imagenes estaticas con Ken Burns (legacy)
     image_urls = []
-    for url in [data.image_url, data.image_url_2, data.image_url_3]:
+    for url in [
+        data.image_url,
+        data.image_url_2,
+        data.image_url_3,
+        data.image_url_4,
+        data.image_url_5,
+    ]:
         if url and url.strip():
             image_urls.append(url.strip())
 
