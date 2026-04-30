@@ -23,31 +23,22 @@ CLIPS_DIR = os.path.join(BASE_DIR, "clips")
 
 MUSIC_FILE = "/app/music/background.mp3"
 
-# Cola final para CTA visual con música, después de terminar la voz.
 END_TAIL_DURATION = 2.8
 
-# Hook visual como shock card.
 HOOK_CARD_START = 0.12
 HOOK_CARD_END = 2.20
 
-# Referencia bíblica más tarde y discreta.
 REFERENCE_START_TIME = 6.0
 
-# CTA visual final. Debe caber dentro de END_TAIL_DURATION.
 CTA_CARD_DURATION = 2.4
 
-# Truth punch a mitad del video.
-TRUTH_PUNCH_DURATION = 0.75
+TRUTH_PUNCH_DURATION = 1.35
 
-# Render dinámico.
+AI_VIDEO_READABILITY_FILTER = "colorchannelmixer=rr=0.78:gg=0.78:bb=0.78"
+
 FPS = 24
 OUTPUT_WIDTH = 720
 OUTPUT_HEIGHT = 1280
-MIN_MICRO_SHOTS = 12
-MAX_MICRO_SHOTS = 16
-
-# Filtro leve para legibilidad del video AI.
-AI_VIDEO_READABILITY_FILTER = "colorchannelmixer=rr=0.78:gg=0.78:bb=0.78"
 
 os.makedirs(AUDIO_DIR, exist_ok=True)
 os.makedirs(VIDEO_DIR, exist_ok=True)
@@ -205,10 +196,6 @@ def extract_quoted_cta(call_to_action: str, hook: str = "", guion: str = "") -> 
 
 
 def extract_truth_punch_text(guion: str) -> str:
-    """
-    No extrae frases literales largas del guion.
-    Traduce la tensión narrativa a un golpe corto, universal y entendible.
-    """
     text = str(guion or "").strip().lower()
 
     if "control" in text or "controlar" in text or "mandaba" in text or "ruta" in text:
@@ -285,93 +272,48 @@ def download_file(url: str, path: str) -> str:
     return path
 
 
-def build_micro_shot_plan(total_duration: float, clip_count: int) -> list[dict]:
-    """
-    Convierte 5 clips en 12–16 micro-shots.
-    Mantiene progresión narrativa, pero agrega cortes internos para que no se sienta estático.
-    """
+def compute_scene_durations(total_duration: float, clip_count: int) -> list:
     if clip_count <= 0:
         return []
 
-    if total_duration <= 0:
-        return []
+    if clip_count == 1:
+        return [max(0.5, total_duration)]
 
-    desired_count = int(round(total_duration / 2.35))
-    shot_count = max(MIN_MICRO_SHOTS, min(MAX_MICRO_SHOTS, desired_count))
+    if clip_count == 5:
+        base = [3.8, 5.2, 7.2, 9.2]
+    else:
+        base = [total_duration / clip_count] * max(0, clip_count - 1)
 
-    if total_duration < 24:
-        shot_count = max(8, min(12, int(round(total_duration / 2.2))))
+    durations = []
+    remaining = max(0.5, total_duration)
 
-    weights_pattern = [
-        0.78, 1.08, 0.92, 1.15,
-        0.86, 1.22, 0.96, 1.18,
-        0.88, 1.28, 1.02, 1.16,
-        0.94, 1.20, 1.05, 1.10,
+    for i in range(clip_count):
+        clips_left_after = clip_count - i - 1
+
+        if i == clip_count - 1:
+            durations.append(max(0.5, remaining))
+            break
+
+        desired = base[i] if i < len(base) else total_duration / clip_count
+        max_allowed = max(0.5, remaining - (0.5 * clips_left_after))
+        duration = min(desired, max_allowed)
+        duration = max(0.5, duration)
+
+        durations.append(duration)
+        remaining -= duration
+
+    return durations
+
+
+def scene_crop_expression(scene_index: int) -> tuple[str, str]:
+    patterns = [
+        ("(iw-ow)/2+16*sin(t*0.35)", "(ih-oh)/2-10*cos(t*0.25)"),
+        ("(iw-ow)/2-18*sin(t*0.32)", "(ih-oh)/2+12*sin(t*0.25)"),
+        ("(iw-ow)/2+14*sin(t*0.30)", "(ih-oh)/2+12*cos(t*0.24)"),
+        ("(iw-ow)/2-16*cos(t*0.28)", "(ih-oh)/2-12*sin(t*0.24)"),
+        ("(iw-ow)/2+10*sin(t*0.25)", "(ih-oh)/2+10*cos(t*0.22)"),
     ]
-
-    raw_weights = weights_pattern[:shot_count]
-    weight_sum = sum(raw_weights)
-    durations = [(w / weight_sum) * total_duration for w in raw_weights]
-
-    # Evitar shots extremadamente cortos o demasiado largos.
-    durations = [max(1.25, min(3.25, d)) for d in durations]
-
-    # Reescalar para que sume exactamente total_duration.
-    scale = total_duration / sum(durations)
-    durations = [d * scale for d in durations]
-
-    # Asignación narrativa: avanza por clips, pero permite reframes múltiples.
-    plan = []
-    cursor = 0.0
-
-    for i, duration in enumerate(durations):
-        progress = i / max(1, shot_count - 1)
-
-        clip_index = min(clip_count - 1, int(progress * clip_count))
-
-        # Primeros shots favorecen clip 0/1, últimos favorecen clip final.
-        if i == 0:
-            clip_index = 0
-        elif i == 1 and clip_count > 1:
-            clip_index = 0
-        elif i >= shot_count - 2:
-            clip_index = clip_count - 1
-
-        plan.append({
-            "shot_index": i,
-            "clip_index": clip_index,
-            "duration": duration,
-            "start": cursor,
-            "end": cursor + duration,
-        })
-
-        cursor += duration
-
-    # Ajuste final exacto.
-    if plan:
-        plan[-1]["duration"] += total_duration - plan[-1]["end"]
-        plan[-1]["end"] = total_duration
-
-    return plan
-
-
-def micro_crop_profile(shot_index: int) -> tuple[int, int, str, str]:
-    """
-    Reframes falsos: close-up, medium, drift, punch.
-    No crea nuevos clips; reencuadra los mismos clips para que parezcan más editados.
-    """
-    profiles = [
-        (900, 1600, "(iw-ow)/2+28*sin(t*0.85)", "(ih-oh)/2-18*cos(t*0.50)"),
-        (1040, 1849, "(iw-ow)/2-42*sin(t*0.70)", "(ih-oh)/2+22*sin(t*0.45)"),
-        (840, 1493, "(iw-ow)/2+22*cos(t*0.60)", "(ih-oh)/2-18*sin(t*0.50)"),
-        (980, 1742, "(iw-ow)/2-34*cos(t*0.65)", "(ih-oh)/2+30*cos(t*0.42)"),
-        (880, 1564, "(iw-ow)/2+36*sin(t*0.55)", "(ih-oh)/2+20*sin(t*0.48)"),
-        (1080, 1920, "(iw-ow)/2-48*sin(t*0.50)", "(ih-oh)/2-30*cos(t*0.40)"),
-        (860, 1529, "(iw-ow)/2+26*cos(t*0.72)", "(ih-oh)/2+22*sin(t*0.60)"),
-        (1000, 1778, "(iw-ow)/2-38*cos(t*0.52)", "(ih-oh)/2-24*sin(t*0.44)"),
-    ]
-
-    return profiles[shot_index % len(profiles)]
+    return patterns[scene_index % len(patterns)]
 
 
 def build_background_from_videos(
@@ -380,93 +322,69 @@ def build_background_from_videos(
     total_duration: float,
     job_id: str
 ) -> None:
-    """
-    Versión dinámica:
-    - Descarga 5 clips.
-    - Los convierte en 12–16 micro-shots.
-    - Usa crops/zooms distintos para simular edición nativa de Shorts.
-    - Mantiene duración final fija para no cortar audio.
-    """
-    clip_count = len(clip_paths)
-    if clip_count == 0:
+    n = len(clip_paths)
+    if n == 0:
         raise RuntimeError("No clip paths received")
 
-    clip_durations = [max(0.5, float(get_audio_duration(path))) for path in clip_paths]
-    plan = build_micro_shot_plan(total_duration, clip_count)
+    scale_width = 820
+    scale_height = 1458
 
-    if not plan:
-        raise RuntimeError("No micro-shot plan created")
+    scene_durations = compute_scene_durations(total_duration, n)
+
+    print(
+        f"[{job_id}] clean_scene_durations="
+        f"{[round(x, 2) for x in scene_durations]}, "
+        f"target_duration={total_duration:.2f}s",
+        flush=True,
+    )
 
     inputs = []
     for clip_path in clip_paths:
         inputs.extend(["-i", clip_path])
 
     filter_parts = []
-    clip_usage_count = {i: 0 for i in range(clip_count)}
 
-    print(
-        f"[{job_id}] dynamic_micro_shots={len(plan)}, "
-        f"target_duration={total_duration:.2f}s, "
-        f"clip_durations={[round(x, 2) for x in clip_durations]}",
-        flush=True,
-    )
+    for i, clip_path in enumerate(clip_paths):
+        target_scene_duration = max(0.5, float(scene_durations[i]))
+        real_clip_duration = max(0.5, float(get_audio_duration(clip_path)))
 
-    for shot in plan:
-        shot_index = int(shot["shot_index"])
-        clip_index = int(shot["clip_index"])
-        target_duration = max(0.5, float(shot["duration"]))
-        real_clip_duration = clip_durations[clip_index]
+        trim_duration = min(real_clip_duration, target_scene_duration)
+        freeze_duration = max(0.0, target_scene_duration - real_clip_duration)
 
-        usage = clip_usage_count[clip_index]
-        clip_usage_count[clip_index] += 1
+        crop_x, crop_y = scene_crop_expression(i)
 
-        # Toma diferentes partes del mismo clip para que no parezca repetición exacta.
-        max_start = max(0.0, real_clip_duration - min(real_clip_duration, target_duration))
-        if max_start > 0.2:
-            trim_start = min(max_start, (usage * 0.85) % max_start)
-        else:
-            trim_start = 0.0
-
-        available = max(0.2, real_clip_duration - trim_start)
-        trim_duration = min(available, target_duration)
-        freeze_duration = max(0.0, target_duration - trim_duration)
-
-        scale_width, scale_height, crop_x, crop_y = micro_crop_profile(shot_index)
-
-        # Alterna contraste ligero por shot para sensación de corte.
-        contrast = "eq=contrast=1.05:saturation=1.03"
-        if shot_index % 5 == 0:
-            contrast = "eq=contrast=1.10:saturation=1.05"
-        elif shot_index % 4 == 0:
-            contrast = "eq=contrast=1.02:saturation=0.98"
+        contrast = "eq=contrast=1.04:saturation=1.02"
+        if i == 0:
+            contrast = "eq=contrast=1.08:saturation=1.04"
 
         chain = (
-            f"[{clip_index}:v]"
-            f"trim=start={trim_start:.2f}:duration={trim_duration:.2f},"
-            f"setpts=PTS-STARTPTS,"
+            f"[{i}:v]"
             f"scale={scale_width}:{scale_height}:force_original_aspect_ratio=increase,"
             f"crop={OUTPUT_WIDTH}:{OUTPUT_HEIGHT}:x='{crop_x}':y='{crop_y}',"
             f"{contrast},"
             f"setsar=1,"
-            f"fps={FPS}"
+            f"fps={FPS},"
+            f"trim=duration={trim_duration:.2f},"
+            f"setpts=PTS-STARTPTS"
         )
 
-        if freeze_duration > 0.08:
+        if freeze_duration > 0.1:
             chain += f",tpad=stop_mode=clone:stop_duration={freeze_duration:.2f}"
 
-        chain += f",format=yuv420p[s{shot_index}]"
+        chain += f",format=yuv420p[v{i}]"
+
         filter_parts.append(chain)
 
         print(
-            f"[{job_id}] shot_{shot_index + 1}: "
-            f"clip={clip_index + 1}, target={target_duration:.2f}s, "
-            f"trim_start={trim_start:.2f}s, trim={trim_duration:.2f}s, "
-            f"freeze={freeze_duration:.2f}s, scale={scale_width}x{scale_height}",
+            f"[{job_id}] scene_{i + 1}: real={real_clip_duration:.2f}s, "
+            f"target={target_scene_duration:.2f}s, "
+            f"trim={trim_duration:.2f}s, "
+            f"freeze={freeze_duration:.2f}s",
             flush=True,
         )
 
-    concat_inputs = "".join(f"[s{i}]" for i in range(len(plan)))
-    filter_parts.append(f"{concat_inputs}concat=n={len(plan)}:v=1:a=0[outv]")
+    concat_inputs = "".join(f"[v{i}]" for i in range(n))
+    filter_parts.append(f"{concat_inputs}concat=n={n}:v=1:a=0[outv]")
 
     filter_complex = ";".join(filter_parts)
 
@@ -505,47 +423,41 @@ def build_background_from_images(
     total_duration: float,
     job_id: str
 ) -> None:
-    """
-    También vuelve imágenes estáticas más dinámicas usando micro-shots.
-    """
     n = len(image_paths)
     if n == 0:
         raise RuntimeError("No image paths received")
 
-    shot_count = max(10, min(MAX_MICRO_SHOTS, int(round(total_duration / 2.4))))
-    shot_duration = total_duration / shot_count
+    clip_duration = total_duration / n
 
     inputs = []
     for img_path in image_paths:
-        inputs.extend(["-loop", "1", "-t", f"{total_duration:.2f}", "-i", img_path])
+        inputs.extend(["-i", img_path])
 
     filter_parts = []
 
-    for i in range(shot_count):
-        image_index = min(n - 1, int((i / max(1, shot_count - 1)) * n))
-        frames = max(1, int(round(shot_duration * FPS)))
-        scale_width, scale_height, crop_x, crop_y = micro_crop_profile(i)
+    for i in range(n):
+        frames = max(1, int(round(clip_duration * FPS)))
 
         filter_parts.append(
-            f"[{image_index}:v]"
-            f"scale={scale_width}:{scale_height}:force_original_aspect_ratio=increase,"
-            f"crop={OUTPUT_WIDTH}:{OUTPUT_HEIGHT}:x='{crop_x}':y='{crop_y}',"
+            f"[{i}:v]"
+            f"scale=800:1422:force_original_aspect_ratio=increase,"
+            f"crop=800:1422,"
             f"setsar=1,"
             f"zoompan="
-            f"z='1+0.08*on/{frames}':"
+            f"z='1+0.11*on/{frames}':"
             f"x='iw/2-(iw/zoom/2)':"
             f"y='ih/2-(ih/zoom/2)':"
             f"d={frames}:"
             f"s={OUTPUT_WIDTH}x{OUTPUT_HEIGHT}:"
             f"fps={FPS},"
-            f"trim=duration={shot_duration:.2f},"
+            f"scale={OUTPUT_WIDTH}:{OUTPUT_HEIGHT}:flags=bicubic,"
             f"setpts=PTS-STARTPTS,"
             f"format=yuv420p"
-            f"[s{i}]"
+            f"[v{i}]"
         )
 
-    concat_inputs = "".join(f"[s{i}]" for i in range(shot_count))
-    filter_parts.append(f"{concat_inputs}concat=n={shot_count}:v=1:a=0[outv]")
+    concat_inputs = "".join(f"[v{i}]" for i in range(n))
+    filter_parts.append(f"{concat_inputs}concat=n={n}:v=1:a=0[outv]")
 
     filter_complex = ";".join(filter_parts)
 
@@ -687,7 +599,7 @@ def build_truth_punch_filters(guion: str, voice_duration: float) -> list:
     punch_text = escape_drawtext_value(extract_truth_punch_text(guion))
 
     start_time = min(max(voice_duration * 0.48, 11.5), max(12.0, voice_duration - 8.0))
-    end_time = min(voice_duration - 3.5, start_time + TRUTH_PUNCH_DURATION)
+    end_time = min(voice_duration - 3.0, start_time + TRUTH_PUNCH_DURATION)
 
     if end_time <= start_time:
         return []
@@ -1108,9 +1020,8 @@ def health():
         "hook_card_end": HOOK_CARD_END,
         "reference_start_time": REFERENCE_START_TIME,
         "cta_card_duration": CTA_CARD_DURATION,
-        "dynamic_micro_shots": True,
-        "min_micro_shots": MIN_MICRO_SHOTS,
-        "max_micro_shots": MAX_MICRO_SHOTS,
+        "truth_punch_duration": TRUTH_PUNCH_DURATION,
+        "render_style": "clean_5_scene_cinematic",
     }
 
 
@@ -1336,7 +1247,6 @@ async def render_video(data: RenderRequest):
     use_images = (not use_videos) and len(image_urls) > 0
     render_mode = "black_background"
     media_count = 0
-    micro_shots_count = 0
 
     if use_videos:
         try:
@@ -1346,14 +1256,12 @@ async def render_video(data: RenderRequest):
                 download_file(url, clip_path)
                 clip_paths.append(clip_path)
 
-            micro_shots_count = len(build_micro_shot_plan(final_duration, len(clip_paths)))
-
             bg_video_path = os.path.join(CLIPS_DIR, f"{job_id}_bg.mp4")
             build_background_from_videos(clip_paths, bg_video_path, final_duration, job_id)
 
             overlay_filter = AI_VIDEO_READABILITY_FILTER
             video_filter = compose_video_filter(overlay_filter)
-            render_mode = f"ai_video_dynamic_{len(clip_paths)}"
+            render_mode = f"ai_video_clean_{len(clip_paths)}"
             media_count = len(clip_paths)
 
             ffmpeg_cmd = [
@@ -1392,14 +1300,12 @@ async def render_video(data: RenderRequest):
                 download_file(url, img_path)
                 image_paths.append(img_path)
 
-            micro_shots_count = max(10, min(MAX_MICRO_SHOTS, int(round(final_duration / 2.4))))
-
             bg_video_path = os.path.join(IMAGE_DIR, f"{job_id}_bg.mp4")
             build_background_from_images(image_paths, bg_video_path, final_duration, job_id)
 
             overlay_filter = "colorchannelmixer=rr=0.68:gg=0.68:bb=0.68"
             video_filter = compose_video_filter(overlay_filter)
-            render_mode = f"static_image_dynamic_{len(image_paths)}"
+            render_mode = f"static_image_clean_{len(image_paths)}"
             media_count = len(image_paths)
 
             ffmpeg_cmd = [
@@ -1499,12 +1405,12 @@ async def render_video(data: RenderRequest):
         "speed_factor": speed_factor,
         "music_used": os.path.exists(MUSIC_FILE),
         "media_count": media_count,
-        "dynamic_micro_shots": True,
-        "micro_shots_count": micro_shots_count,
         "referencia_biblica_used": bool(data.referencia_biblica and data.referencia_biblica.strip()),
         "hook_received": bool(data.hook and data.hook.strip()),
         "hook_visual_text_received": bool(data.hook_visual_text and data.hook_visual_text.strip()),
         "call_to_action_received": bool(data.call_to_action and data.call_to_action.strip()),
         "cta_visual_phrase": extract_quoted_cta(data.call_to_action, hook=data.hook, guion=data.guion),
         "truth_punch_text": extract_truth_punch_text(data.guion),
+        "truth_punch_duration": TRUTH_PUNCH_DURATION,
+        "render_style": "clean_5_scene_cinematic",
     }
