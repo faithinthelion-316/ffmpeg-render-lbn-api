@@ -23,8 +23,8 @@ CLIPS_DIR = os.path.join(BASE_DIR, "clips")
 
 MUSIC_FILE = "/app/music/background.mp3"
 
-# Safe zone final con música.
-END_TAIL_DURATION = 1.5
+# Cola final para CTA visual con música, después de terminar la voz.
+END_TAIL_DURATION = 2.8
 
 # Hook visual como shock card.
 HOOK_CARD_START = 0.12
@@ -33,11 +33,11 @@ HOOK_CARD_END = 2.20
 # Referencia bíblica más tarde y discreta.
 REFERENCE_START_TIME = 6.0
 
-# CTA visual final.
-CTA_CARD_DURATION = 3.0
+# CTA visual final. Debe caber dentro de END_TAIL_DURATION.
+CTA_CARD_DURATION = 2.4
 
 # Truth punch a mitad del video.
-TRUTH_PUNCH_DURATION = 0.85
+TRUTH_PUNCH_DURATION = 0.75
 
 # Filtro leve para legibilidad del video AI.
 AI_VIDEO_READABILITY_FILTER = "colorchannelmixer=rr=0.78:gg=0.78:bb=0.78"
@@ -91,6 +91,10 @@ IMPACT_WORDS = {
     "EXAMINAME",
     "VUELVE",
     "VOLVER",
+    "HUIR",
+    "HUÍA",
+    "HUIA",
+    "TORMENTA",
 }
 
 
@@ -100,7 +104,7 @@ def normalize_token(value: str) -> str:
         c for c in unicodedata.normalize("NFD", text)
         if unicodedata.category(c) != "Mn"
     )
-    text = re.sub(r"[^A-ZÑÁÉÍÓÚÜ]+", "", text)
+    text = re.sub(r"[^A-ZÑ]+", "", text)
     return text
 
 
@@ -154,14 +158,14 @@ def split_headline(text: str) -> tuple[str, str]:
     if len(words) == 2:
         return words[0], words[1]
 
-    # Última palabra = palabra de choque en dorado.
     top = " ".join(words[:-1])
     gold = words[-1]
     return top, gold
 
 
-def extract_quoted_cta(call_to_action: str) -> str:
+def extract_quoted_cta(call_to_action: str, hook: str = "", guion: str = "") -> str:
     text = str(call_to_action or "")
+    context = f"{call_to_action} {hook} {guion}".lower()
 
     match = re.search(r"[“\"]([^”\"]{2,80})[”\"]", text)
     if match:
@@ -169,74 +173,71 @@ def extract_quoted_cta(call_to_action: str) -> str:
         if phrase:
             return phrase
 
-    lowered = text.lower()
-
-    if "examin" in lowered or "calma" in lowered or "paz" in lowered:
-        return "EXAMÍNAME, DIOS"
-
-    if "control" in lowered or "soltar" in lowered:
+    if "control" in context or "controlar" in context or "soltar" in context:
         return "RENUNCIO AL CONTROL"
 
-    if "obedec" in lowered:
+    if "obedec" in context:
         return "QUIERO OBEDECER"
 
-    if "volver" in lowered or "regresar" in lowered or "huir" in lowered:
+    if "tarsis" in context or "huir" in context or "huía" in context or "huia" in context or "regresar" in context or "volver" in context:
         return "HAZME VOLVER"
 
-    if "sana" in lowered or "herida" in lowered or "dolor" in lowered:
+    if "examin" in context or "calma" in context or "paz" in context:
+        return "DIOS, EXAMÍNAME"
+
+    if "sana" in context or "herida" in context or "dolor" in context:
         return "SANA MI CORAZÓN"
 
-    if "guía" in lowered or "guia" in lowered or "dirección" in lowered or "direccion" in lowered:
+    if "guía" in context or "guia" in context or "dirección" in context or "direccion" in context:
         return "SEÑOR, GUÍAME"
+
+    if "miedo" in context or "temor" in context:
+        return "NO TENGO MIEDO"
 
     return "DIOS, EXAMÍNAME"
 
 
 def extract_truth_punch_text(guion: str) -> str:
-    text = str(guion or "").strip()
-    if not text:
+    """
+    No extrae frases literales largas del guion.
+    Traduce la tensión narrativa a un golpe corto, universal y entendible.
+    """
+    text = str(guion or "").strip().lower()
+
+    if "control" in text or "controlar" in text or "mandaba" in text or "ruta" in text:
+        return "ERA MIEDO"
+
+    if "tarsis" in text or "huía" in text or "huia" in text or "huir" in text or "puerto" in text:
+        return "HUÍA DE DIOS"
+
+    if "tormenta" in text or "viento" in text or "mar" in text or "nave" in text:
+        return "DIOS LO DETUVO"
+
+    if "calma" in text or "paz" in text or "alivio" in text or "descanso" in text:
+        return "NO ERA PAZ"
+
+    if "verdad" in text or "confrontar" in text or "enfrentar" in text:
         return "LA VERDAD DUELE"
 
-    raw_sentences = re.split(r"(?<=[.!?])\s+", text)
-    candidates = []
+    if "miedo" in text or "temor" in text:
+        return "ERA MIEDO"
 
-    triggers = [
-        "pero",
-        "peor",
-        "no había",
-        "no habia",
-        "no siempre",
-        "no sanan",
-        "solo tapan",
-        "seguía",
-        "seguia",
-        "sombra",
-        "verdad",
-        "obediencia",
-        "arrepentimiento",
-        "costumbre",
-        "calma",
-        "opresión",
-        "opresion",
-    ]
+    if "obedec" in text:
+        return "TOCABA OBEDECER"
 
-    for sentence in raw_sentences:
-        clean = sentence.strip()
-        if not clean:
-            continue
+    if "culpa" in text or "escond" in text:
+        return "DIOS LO VIO"
 
-        low = clean.lower()
-        if any(t in low for t in triggers):
-            words = clean_display_text(clean, max_words=5)
-            if 2 <= len(words.split()) <= 5:
-                candidates.append(words)
+    if "dolor" in text or "herida" in text:
+        return "AÚN DOLÍA"
 
-    if candidates:
-        return candidates[min(len(candidates) // 2, len(candidates) - 1)]
+    if "perdón" in text or "perdon" in text:
+        return "GRACIA INMERECIDA"
 
-    # Fallback: frase corta de mitad del guion.
-    words = clean_display_text(text, max_words=5)
-    return words or "LA VERDAD DUELE"
+    if "orgullo" in text or "soberbia" in text:
+        return "ORGULLO ROTO"
+
+    return "DIOS LO VIO"
 
 
 def get_audio_duration(audio_path: str) -> float:
@@ -278,17 +279,12 @@ def download_file(url: str, path: str) -> str:
 
 
 def compute_scene_durations(total_duration: float, clip_count: int) -> list:
-    """
-    Ritmo más agresivo para Shorts:
-    escena 1 corta, cambio visual temprano, cierre con CTA.
-    """
     if clip_count <= 0:
         return []
 
     if clip_count == 1:
         return [max(0.5, total_duration)]
 
-    # Para 5 clips: 0-3.5, 3.5-8.5, 8.5-15.5, 15.5-25.5, resto.
     base = [3.5, 5.0, 7.0, 10.0]
 
     durations = []
@@ -313,10 +309,6 @@ def compute_scene_durations(total_duration: float, clip_count: int) -> list:
 
 
 def scene_crop_expression(scene_index: int) -> tuple[str, str]:
-    """
-    Movimiento artificial leve por escena sin filtros pesados.
-    Trabaja sobre un frame escalado más grande que 720x1280.
-    """
     patterns = [
         ("(iw-ow)/2+18*sin(t*0.8)", "(ih-oh)/2-10*cos(t*0.5)"),
         ("(iw-ow)/2-22*sin(t*0.55)", "(ih-oh)/2+12*sin(t*0.45)"),
@@ -341,7 +333,6 @@ def build_background_from_videos(
     height = 1280
     fps = 24
 
-    # Escalado mayor para permitir drift/punch sin bordes negros.
     scale_width = 820
     scale_height = 1458
 
@@ -602,18 +593,18 @@ def build_hook_card_filters(hook_visual_text: str) -> list:
     return filters
 
 
-def build_truth_punch_filters(guion: str, audio_duration: float) -> list:
+def build_truth_punch_filters(guion: str, voice_duration: float) -> list:
     if not os.path.exists(RUNTIME_FONT_FILE):
         return []
 
-    if audio_duration < 18:
+    if voice_duration < 18:
         return []
 
     safe_font_path = escape_ffmpeg_path(RUNTIME_FONT_FILE)
     punch_text = escape_drawtext_value(extract_truth_punch_text(guion))
 
-    start_time = min(max(audio_duration * 0.48, 11.5), max(12.0, audio_duration - 8.0))
-    end_time = min(audio_duration - 3.5, start_time + TRUTH_PUNCH_DURATION)
+    start_time = min(max(voice_duration * 0.48, 11.5), max(12.0, voice_duration - 8.0))
+    end_time = min(voice_duration - 3.5, start_time + TRUTH_PUNCH_DURATION)
 
     if end_time <= start_time:
         return []
@@ -621,37 +612,46 @@ def build_truth_punch_filters(guion: str, audio_duration: float) -> list:
     enable = f"between(t\\,{start_time:.2f}\\,{end_time:.2f})"
 
     return [
-        f"drawbox=x=70:y=475:w=580:h=180:color=black@0.55:t=fill:enable='{enable}'",
-        f"drawbox=x=70:y=475:w=580:h=180:color=0xDFAF37@0.20:t=4:enable='{enable}'",
+        f"drawbox=x=110:y=500:w=500:h=150:color=black@0.55:t=fill:enable='{enable}'",
+        f"drawbox=x=110:y=500:w=500:h=150:color=0xDFAF37@0.20:t=4:enable='{enable}'",
         f"drawtext="
         f"fontfile='{safe_font_path}':"
         f"text='{punch_text}':"
-        f"fontsize=78:"
+        f"fontsize=66:"
         f"fontcolor=0xE6C15A:"
         f"borderw=5:"
         f"bordercolor=black:"
         f"shadowx=2:"
         f"shadowy=2:"
         f"x=(w-text_w)/2:"
-        f"y=530:"
+        f"y=545:"
         f"enable='{enable}'"
     ]
 
 
-def build_cta_card_filters(call_to_action: str, audio_duration: float) -> list:
+def build_cta_card_filters(
+    call_to_action: str,
+    hook: str,
+    guion: str,
+    cta_start_time: float,
+    final_duration: float
+) -> list:
     if not os.path.exists(RUNTIME_FONT_FILE):
         return []
 
-    if audio_duration < 8:
+    if final_duration < 8:
         return []
 
     safe_font_path = escape_ffmpeg_path(RUNTIME_FONT_FILE)
 
-    phrase = extract_quoted_cta(call_to_action)
+    phrase = extract_quoted_cta(call_to_action, hook=hook, guion=guion)
     safe_phrase = escape_drawtext_value(phrase)
 
-    start_time = max(HOOK_CARD_END + 1.0, audio_duration - CTA_CARD_DURATION)
-    end_time = max(start_time + 0.5, audio_duration - 0.20)
+    start_time = cta_start_time
+    end_time = min(final_duration - 0.10, cta_start_time + CTA_CARD_DURATION)
+
+    if end_time <= start_time + 0.4:
+        return []
 
     enable = f"between(t\\,{start_time:.2f}\\,{end_time:.2f})"
 
@@ -930,11 +930,9 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
             cue_start = float(cue["start"])
             cue_end = float(cue["end"])
 
-            # Durante el shock card, no mostrar subtítulo normal.
             if cue_start < HOOK_CARD_END:
                 continue
 
-            # Durante el comment card final, no competir con caption normal.
             if cta_start_time is not None and cue_start >= cta_start_time:
                 continue
 
@@ -1066,8 +1064,8 @@ async def render_video(data: RenderRequest):
     job_id = str(uuid.uuid4())
 
     input_audio_path = os.path.join(AUDIO_DIR, f"{job_id}.mp3")
-    normalized_audio_path = os.path.join(AUDIO_DIR, f"{job_id}_normalized.mp3")
-    mixed_audio_path = os.path.join(AUDIO_DIR, f"{job_id}_mixed.mp3")
+    voice_audio_path = os.path.join(AUDIO_DIR, f"{job_id}_voice.mp3")
+    final_audio_path = os.path.join(AUDIO_DIR, f"{job_id}_final.mp3")
     subtitles_path = os.path.join(BASE_DIR, f"{job_id}.ass")
     video_path = os.path.join(VIDEO_DIR, f"{job_id}.mp4")
 
@@ -1096,7 +1094,7 @@ async def render_video(data: RenderRequest):
         "-ar", "44100",
         "-ac", "2",
         "-b:a", "192k",
-        normalized_audio_path
+        voice_audio_path
     ]
 
     normalize_result = subprocess.run(normalize_cmd, capture_output=True, text=True)
@@ -1112,8 +1110,9 @@ async def render_video(data: RenderRequest):
             }
         )
 
-    voice_duration = round(get_audio_duration(normalized_audio_path), 3)
-    target_duration = voice_duration + END_TAIL_DURATION
+    voice_duration = round(get_audio_duration(voice_audio_path), 3)
+    final_duration = round(voice_duration + END_TAIL_DURATION, 3)
+    cta_start_time = round(voice_duration + 0.05, 3)
 
     if os.path.exists(MUSIC_FILE):
         mix_cmd = [
@@ -1123,42 +1122,69 @@ async def render_video(data: RenderRequest):
             "-y",
             "-stream_loop", "-1",
             "-i", MUSIC_FILE,
-            "-i", normalized_audio_path,
+            "-i", voice_audio_path,
             "-filter_complex",
             (
                 f"[0:a]volume=0.20[bg];"
                 f"[1:a]apad=pad_dur={END_TAIL_DURATION},volume=1.4[voice];"
-                f"[bg][voice]amix=inputs=2:duration=shortest:dropout_transition=2"
+                f"[bg][voice]amix=inputs=2:duration=first:dropout_transition=2"
             ),
-            "-t", f"{target_duration:.2f}",
+            "-t", f"{final_duration:.2f}",
             "-c:a", "libmp3lame",
             "-b:a", "192k",
-            mixed_audio_path
+            "-ar", "44100",
+            "-ac", "2",
+            final_audio_path
         ]
 
         mix_result = subprocess.run(mix_cmd, capture_output=True, text=True)
 
-        if mix_result.returncode == 0 and os.path.exists(mixed_audio_path):
-            normalized_audio_path = mixed_audio_path
-            print(
-                f"[{job_id}] mixed voice+music with {END_TAIL_DURATION}s tail",
-                flush=True
+        if mix_result.returncode != 0 or not os.path.exists(final_audio_path):
+            raise HTTPException(
+                status_code=500,
+                detail={
+                    "message": "Error mezclando audio final",
+                    "stdout": mix_result.stdout,
+                    "stderr": mix_result.stderr,
+                }
             )
-        else:
-            print(
-                f"[{job_id}] mix failed: {mix_result.stderr}",
-                flush=True
+    else:
+        pad_cmd = [
+            "ffmpeg",
+            "-hide_banner",
+            "-loglevel", "error",
+            "-y",
+            "-i", voice_audio_path,
+            "-af", f"apad=pad_dur={END_TAIL_DURATION}",
+            "-t", f"{final_duration:.2f}",
+            "-c:a", "libmp3lame",
+            "-b:a", "192k",
+            "-ar", "44100",
+            "-ac", "2",
+            final_audio_path
+        ]
+
+        pad_result = subprocess.run(pad_cmd, capture_output=True, text=True)
+
+        if pad_result.returncode != 0 or not os.path.exists(final_audio_path):
+            raise HTTPException(
+                status_code=500,
+                detail={
+                    "message": "Error extendiendo audio final",
+                    "stdout": pad_result.stdout,
+                    "stderr": pad_result.stderr,
+                }
             )
 
-    audio_duration = round(get_audio_duration(normalized_audio_path), 3)
+    final_audio_duration = round(get_audio_duration(final_audio_path), 3)
 
     print(
         f"[{job_id}] voice_duration={voice_duration:.2f}s, "
-        f"final_audio_duration={audio_duration:.2f}s",
+        f"final_duration={final_duration:.2f}s, "
+        f"final_audio_duration={final_audio_duration:.2f}s, "
+        f"cta_start_time={cta_start_time:.2f}s",
         flush=True
     )
-
-    cta_start_time = max(HOOK_CARD_END + 1.0, audio_duration - CTA_CARD_DURATION)
 
     adjusted_alignment = speed_up_alignment(data.normalized_alignment, speed_factor)
     words = build_words_from_alignment(adjusted_alignment)
@@ -1186,10 +1212,15 @@ async def render_video(data: RenderRequest):
 
         parts.append(f"subtitles='{safe_subtitles_path}':fontsdir='{safe_fonts_dir}'")
 
-        # Overlays después de subtítulos para que el hook/truth/CTA sean dominantes.
         parts.extend(build_hook_card_filters(hook_text))
-        parts.extend(build_truth_punch_filters(data.guion, audio_duration))
-        parts.extend(build_cta_card_filters(data.call_to_action, audio_duration))
+        parts.extend(build_truth_punch_filters(data.guion, voice_duration))
+        parts.extend(build_cta_card_filters(
+            data.call_to_action,
+            hook=data.hook,
+            guion=data.guion,
+            cta_start_time=cta_start_time,
+            final_duration=final_duration
+        ))
 
         return ",".join(parts)
 
@@ -1229,7 +1260,7 @@ async def render_video(data: RenderRequest):
                 clip_paths.append(clip_path)
 
             bg_video_path = os.path.join(CLIPS_DIR, f"{job_id}_bg.mp4")
-            build_background_from_videos(clip_paths, bg_video_path, audio_duration, job_id)
+            build_background_from_videos(clip_paths, bg_video_path, final_duration, job_id)
 
             overlay_filter = AI_VIDEO_READABILITY_FILTER
             video_filter = compose_video_filter(overlay_filter)
@@ -1242,10 +1273,11 @@ async def render_video(data: RenderRequest):
                 "-loglevel", "error",
                 "-y",
                 "-i", bg_video_path,
-                "-i", normalized_audio_path,
+                "-i", final_audio_path,
                 "-vf", video_filter,
                 "-map", "0:v:0",
                 "-map", "1:a:0",
+                "-t", f"{final_duration:.2f}",
                 "-c:v", "libx264",
                 "-preset", "ultrafast",
                 "-crf", "26",
@@ -1254,7 +1286,6 @@ async def render_video(data: RenderRequest):
                 "-ar", "44100",
                 "-pix_fmt", "yuv420p",
                 "-movflags", "+faststart",
-                "-shortest",
                 video_path
             ]
 
@@ -1273,7 +1304,7 @@ async def render_video(data: RenderRequest):
                 image_paths.append(img_path)
 
             bg_video_path = os.path.join(IMAGE_DIR, f"{job_id}_bg.mp4")
-            build_background_from_images(image_paths, bg_video_path, audio_duration, job_id)
+            build_background_from_images(image_paths, bg_video_path, final_duration, job_id)
 
             overlay_filter = "colorchannelmixer=rr=0.68:gg=0.68:bb=0.68"
             video_filter = compose_video_filter(overlay_filter)
@@ -1286,10 +1317,11 @@ async def render_video(data: RenderRequest):
                 "-loglevel", "error",
                 "-y",
                 "-i", bg_video_path,
-                "-i", normalized_audio_path,
+                "-i", final_audio_path,
                 "-vf", video_filter,
                 "-map", "0:v:0",
                 "-map", "1:a:0",
+                "-t", f"{final_duration:.2f}",
                 "-c:v", "libx264",
                 "-preset", "ultrafast",
                 "-crf", "28",
@@ -1298,7 +1330,6 @@ async def render_video(data: RenderRequest):
                 "-ar", "44100",
                 "-pix_fmt", "yuv420p",
                 "-movflags", "+faststart",
-                "-shortest",
                 video_path
             ]
 
@@ -1317,11 +1348,12 @@ async def render_video(data: RenderRequest):
             "-loglevel", "error",
             "-y",
             "-f", "lavfi",
-            "-i", f"color=c=black:s=720x1280:r=24:d={audio_duration}",
-            "-i", normalized_audio_path,
+            "-i", f"color=c=black:s=720x1280:r=24:d={final_duration}",
+            "-i", final_audio_path,
             "-vf", video_filter,
             "-map", "0:v:0",
             "-map", "1:a:0",
+            "-t", f"{final_duration:.2f}",
             "-c:v", "libx264",
             "-preset", "ultrafast",
             "-crf", "28",
@@ -1330,7 +1362,6 @@ async def render_video(data: RenderRequest):
             "-ar", "44100",
             "-pix_fmt", "yuv420p",
             "-movflags", "+faststart",
-            "-shortest",
             video_path
         ]
 
@@ -1367,8 +1398,10 @@ async def render_video(data: RenderRequest):
         "video_url": f"/video/{job_id}.mp4",
         "video_url_full": f"{base_url}/video/{job_id}.mp4",
         "voice_duration": voice_duration,
-        "audio_duration": audio_duration,
+        "audio_duration": final_audio_duration,
+        "final_duration": final_duration,
         "end_tail_duration": END_TAIL_DURATION,
+        "cta_start_time": cta_start_time,
         "subtitles_mode_received": data.subtitles_mode,
         "render_mode": render_mode,
         "cues_count": len(cues),
@@ -1379,5 +1412,6 @@ async def render_video(data: RenderRequest):
         "hook_received": bool(data.hook and data.hook.strip()),
         "hook_visual_text_received": bool(data.hook_visual_text and data.hook_visual_text.strip()),
         "call_to_action_received": bool(data.call_to_action and data.call_to_action.strip()),
-        "cta_visual_phrase": extract_quoted_cta(data.call_to_action),
+        "cta_visual_phrase": extract_quoted_cta(data.call_to_action, hook=data.hook, guion=data.guion),
+        "truth_punch_text": extract_truth_punch_text(data.guion),
     }
