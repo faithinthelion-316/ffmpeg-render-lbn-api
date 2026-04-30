@@ -22,9 +22,17 @@ CLIPS_DIR = os.path.join(BASE_DIR, "clips")
 
 MUSIC_FILE = "/app/music/background.mp3"
 
-# Segundos extra al final del video (con musica de fondo, sin voz)
-# para dar safe zone de cierre y que el ultimo subtitulo respire
+# Segundos extra al final del video con música de fondo, sin voz.
 END_TAIL_DURATION = 1.5
+
+# Retención inicial: estilo especial solo para el hook inicial.
+HOOK_CUE_MAX_START = 2.2
+
+# La referencia bíblica aparece después del hook para no competir visualmente.
+REFERENCE_START_TIME = 5.0
+
+# Oscurecimiento suave para mejorar legibilidad sin apagar demasiado los clips AI.
+AI_VIDEO_READABILITY_FILTER = "colorchannelmixer=rr=0.82:gg=0.82:bb=0.82"
 
 os.makedirs(AUDIO_DIR, exist_ok=True)
 os.makedirs(VIDEO_DIR, exist_ok=True)
@@ -103,9 +111,43 @@ def get_audio_duration(audio_path: str) -> float:
 
 
 def download_file(url: str, path: str) -> str:
-    """Descarga cualquier archivo (imagen o video) desde URL."""
+    """Descarga cualquier archivo desde URL."""
     urllib.request.urlretrieve(url, path)
     return path
+
+
+def compute_scene_durations(total_duration: float, clip_count: int) -> list:
+    """
+    Distribuye la duración visual para respetar la progresión narrativa:
+    escena 1 corta e intensa, escenas medias progresivas, escena final con cierre.
+    """
+    if clip_count <= 0:
+        return []
+
+    if clip_count == 1:
+        return [max(0.5, total_duration)]
+
+    base = [5.0, 7.0, 8.0, 9.0]
+
+    durations = []
+    remaining = max(0.5, total_duration)
+
+    for i in range(clip_count):
+        clips_left_after = clip_count - i - 1
+
+        if i == clip_count - 1:
+            durations.append(max(0.5, remaining))
+            break
+
+        desired = base[i] if i < len(base) else total_duration / clip_count
+        max_allowed = max(0.5, remaining - (0.5 * clips_left_after))
+        duration = min(desired, max_allowed)
+        duration = max(0.5, duration)
+
+        durations.append(duration)
+        remaining -= duration
+
+    return durations
 
 
 def build_background_from_videos(
@@ -115,9 +157,11 @@ def build_background_from_videos(
     job_id: str
 ) -> None:
     """
-    Concatena clips de video AI (Kling, etc) y los ajusta a 720x1280.
-    Si la duracion total de los clips es MENOR que el audio target, extiende
-    el ultimo clip congelando su ultimo frame para cubrir el audio entero.
+    Optimización para Shorts:
+    - Recorta cada clip según duración narrativa.
+    - Scene 1 queda corta e intensa para apoyar el hook.
+    - Si un clip dura menos que su segmento, congela su último frame.
+    - Mantiene 720x1280, 24fps y preset ultrafast para no romper timeout.
     """
     n = len(clip_paths)
     if n == 0:
@@ -127,19 +171,14 @@ def build_background_from_videos(
     height = 1280
     fps = 24
 
-    # Calcular la duracion total real de los clips concatenados
-    clips_total_duration = 0.0
-    for clip_path in clip_paths:
-        clips_total_duration += get_audio_duration(clip_path)
+    scene_durations = compute_scene_durations(total_duration, n)
 
     print(
-        f"[{job_id}] clips_total_duration={clips_total_duration:.2f}s, "
+        f"[{job_id}] scene_durations="
+        f"{[round(x, 2) for x in scene_durations]}, "
         f"target_duration={total_duration:.2f}s",
         flush=True,
     )
-
-    # Si los clips no cubren la duracion target, extender ultimo frame
-    extra_duration = max(0.0, total_duration - clips_total_duration + 0.3)
 
     inputs = []
     for clip_path in clip_paths:
@@ -147,34 +186,40 @@ def build_background_from_videos(
 
     filter_parts = []
 
-    for i in range(n):
-        filter_parts.append(
+    for i, clip_path in enumerate(clip_paths):
+        target_scene_duration = max(0.5, float(scene_durations[i]))
+        real_clip_duration = max(0.5, float(get_audio_duration(clip_path)))
+
+        trim_duration = min(real_clip_duration, target_scene_duration)
+        freeze_duration = max(0.0, target_scene_duration - real_clip_duration)
+
+        chain = (
             f"[{i}:v]"
             f"scale={width}:{height}:force_original_aspect_ratio=increase,"
             f"crop={width}:{height},"
             f"setsar=1,"
             f"fps={fps},"
-            f"setpts=PTS-STARTPTS,"
-            f"format=yuv420p"
-            f"[v{i}]"
+            f"trim=duration={trim_duration:.2f},"
+            f"setpts=PTS-STARTPTS"
+        )
+
+        if freeze_duration > 0.1:
+            chain += f",tpad=stop_mode=clone:stop_duration={freeze_duration:.2f}"
+
+        chain += f",format=yuv420p[v{i}]"
+
+        filter_parts.append(chain)
+
+        print(
+            f"[{job_id}] clip_{i + 1}: real={real_clip_duration:.2f}s, "
+            f"target={target_scene_duration:.2f}s, "
+            f"trim={trim_duration:.2f}s, "
+            f"freeze={freeze_duration:.2f}s",
+            flush=True,
         )
 
     concat_inputs = "".join(f"[v{i}]" for i in range(n))
-
-    if extra_duration > 0.1:
-        # Concatenar clips + congelar ultimo frame con tpad
-        filter_parts.append(
-            f"{concat_inputs}concat=n={n}:v=1:a=0[concated]"
-        )
-        filter_parts.append(
-            f"[concated]tpad=stop_mode=clone:stop_duration={extra_duration:.2f}[outv]"
-        )
-        print(
-            f"[{job_id}] extending last frame by {extra_duration:.2f}s",
-            flush=True,
-        )
-    else:
-        filter_parts.append(f"{concat_inputs}concat=n={n}:v=1:a=0[outv]")
+    filter_parts.append(f"{concat_inputs}concat=n={n}:v=1:a=0[outv]")
 
     filter_complex = ";".join(filter_parts)
 
@@ -186,6 +231,7 @@ def build_background_from_videos(
         *inputs,
         "-filter_complex", filter_complex,
         "-map", "[outv]",
+        "-t", f"{total_duration:.2f}",
         "-c:v", "libx264",
         "-preset", "ultrafast",
         "-crf", "23",
@@ -286,11 +332,11 @@ def build_background_from_images(
         raise RuntimeError("output background not created")
 
 
-def build_reference_filter(referencia_biblica: str) -> str:
+def build_reference_filter(referencia_biblica: str, start_time: float = REFERENCE_START_TIME) -> str:
     """
-    Construye el drawtext de la referencia biblica.
-    Aparece pequena, en gris claro, debajo del area de subtitulos.
-    Solo se dibuja si referencia_biblica no esta vacia.
+    Construye el drawtext de la referencia bíblica.
+    Aparece pequeña, en gris claro, debajo del área de subtítulos.
+    Para retención inicial, se oculta durante los primeros segundos.
     """
     if not referencia_biblica or not referencia_biblica.strip():
         return ""
@@ -304,8 +350,6 @@ def build_reference_filter(referencia_biblica: str) -> str:
     if not safe_text:
         return ""
 
-    # Color gris claro #B8B8B8 con borde negro suave
-    # y=h*0.82 = debajo del area de subtitulos
     return (
         f"drawtext="
         f"fontfile='{safe_font_path}':"
@@ -317,7 +361,8 @@ def build_reference_filter(referencia_biblica: str) -> str:
         f"shadowx=1:"
         f"shadowy=1:"
         f"x=(w-text_w)/2:"
-        f"y=h*0.82"
+        f"y=h*0.82:"
+        f"enable='gte(t\\,{start_time:.2f})'"
     )
 
 
@@ -509,7 +554,11 @@ def build_line_groups(word_items: list, max_line_chars: int = 26) -> list:
     return groups
 
 
-def build_ass_dialogue_text(groups: list, active_index: int | None = None) -> str:
+def build_ass_dialogue_text(
+    groups: list,
+    active_index: int | None = None,
+    is_hook: bool = False
+) -> str:
     line_texts = []
 
     for line in groups:
@@ -522,7 +571,12 @@ def build_ass_dialogue_text(groups: list, active_index: int | None = None) -> st
                 parts.append(word_text)
         line_texts.append(" ".join(parts))
 
-    return r"{\an2\bord3\shad0\fscx100\fscy100\fsp0" + ASS_WHITE + r"}" + r"\N".join(line_texts)
+    if is_hook:
+        prefix = r"{\an2\fs92\bord4\shad0\fscx100\fscy100\fsp1" + ASS_WHITE + r"}"
+    else:
+        prefix = r"{\an2\fs72\bord3\shad0\fscx100\fscy100\fsp0" + ASS_WHITE + r"}"
+
+    return prefix + r"\N".join(line_texts)
 
 
 def write_ass_subtitles(subtitles_path: str, cues: list):
@@ -536,6 +590,7 @@ ScaledBorderAndShadow: yes
 [V4+ Styles]
 Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
 Style: Default,Bebas Neue,72,&H00FFFFFF,&H00FFFFFF,&H00000000,&H64000000,-1,0,0,0,100,100,0,0,1,3,0,2,90,90,280,1
+Style: Hook,Bebas Neue,92,&H00FFFFFF,&H00FFFFFF,&H00000000,&H64000000,-1,0,0,0,100,100,0,0,1,4,0,2,60,60,360,1
 
 [Events]
 Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
@@ -545,7 +600,15 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
         f.write(header)
 
         for cue in cues:
-            groups = build_line_groups(cue.get("words", []), max_line_chars=20)
+            cue_start = float(cue["start"])
+            cue_end = float(cue["end"])
+            is_hook_cue = cue_start < HOOK_CUE_MAX_START
+
+            groups = build_line_groups(
+                cue.get("words", []),
+                max_line_chars=14 if is_hook_cue else 20
+            )
+
             if not groups:
                 continue
 
@@ -554,8 +617,6 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
                 continue
 
             segments = []
-            cue_start = float(cue["start"])
-            cue_end = float(cue["end"])
             cursor = cue_start
             eps = 0.01
 
@@ -600,11 +661,17 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
                 else:
                     merged_segments.append(seg)
 
+            style_name = "Hook" if is_hook_cue else "Default"
+
             for seg in merged_segments:
                 start = seconds_to_ass_time(seg["start"])
                 end = seconds_to_ass_time(seg["end"])
-                text = build_ass_dialogue_text(groups, active_index=seg["active_index"])
-                f.write(f"Dialogue: 0,{start},{end},Default,,0,0,0,,{text}\n")
+                text = build_ass_dialogue_text(
+                    groups,
+                    active_index=seg["active_index"],
+                    is_hook=is_hook_cue
+                )
+                f.write(f"Dialogue: 0,{start},{end},{style_name},,0,0,0,,{text}\n")
 
 
 @app.get("/")
@@ -615,7 +682,9 @@ def health():
         "font_path": RUNTIME_FONT_FILE,
         "music_exists": os.path.exists(MUSIC_FILE),
         "music_path": MUSIC_FILE,
-        "end_tail_duration": END_TAIL_DURATION
+        "end_tail_duration": END_TAIL_DURATION,
+        "hook_cue_max_start": HOOK_CUE_MAX_START,
+        "reference_start_time": REFERENCE_START_TIME,
     }
 
 
@@ -626,15 +695,15 @@ class RenderRequest(BaseModel):
     subtitles_mode: str = "dynamic"
     audio_base64: str
     normalized_alignment: dict
-    # Referencia biblica que aparece pequena debajo del subtitulo:
+
     referencia_biblica: str = ""
-    # Videos AI (Kling/Runway/etc) - hasta 5:
+
     video_url: str = ""
     video_url_2: str = ""
     video_url_3: str = ""
     video_url_4: str = ""
     video_url_5: str = ""
-    # Imagenes estaticas (legacy fallback) - hasta 5:
+
     image_url: str = ""
     image_url_2: str = ""
     image_url_3: str = ""
@@ -699,18 +768,10 @@ async def render_video(data: RenderRequest):
             }
         )
 
-    # Duracion del audio de voz (sin tail)
     voice_duration = round(get_audio_duration(normalized_audio_path), 3)
-
-    # Duracion target del video final (voz + tail con musica)
     target_duration = voice_duration + END_TAIL_DURATION
 
     if os.path.exists(MUSIC_FILE):
-        # Mezcla todo en UN solo paso de FFmpeg:
-        # 1. Voz: padea con silencio END_TAIL_DURATION segundos al final
-        # 2. Musica: se loopea, se reduce volumen, dura lo mismo que la voz padded
-        # 3. amix con duration=longest para mantener la cola de musica
-        # Esto evita un paso intermedio de apad y ahorra tiempo significativo
         mix_cmd = [
             "ffmpeg",
             "-hide_banner",
@@ -745,7 +806,6 @@ async def render_video(data: RenderRequest):
                 flush=True
             )
 
-    # Duracion final del audio (voz + tail con musica)
     audio_duration = round(get_audio_duration(normalized_audio_path), 3)
 
     print(
@@ -762,14 +822,15 @@ async def render_video(data: RenderRequest):
     safe_subtitles_path = escape_ffmpeg_path(subtitles_path)
     safe_fonts_dir = escape_ffmpeg_path(FONTS_DIR)
 
-    # Construir filtro de referencia biblica (vacio si no hay referencia)
-    reference_filter = build_reference_filter(data.referencia_biblica)
+    reference_filter = build_reference_filter(
+        data.referencia_biblica,
+        start_time=REFERENCE_START_TIME
+    )
 
     def compose_video_filter(prefix_filter: str = "") -> str:
         """
-        Une los filtros en el orden: overlay -> referencia -> subtitulos
-        Si no hay overlay, empieza directo con referencia o subtitulos.
-        Si no hay referencia, salta ese paso.
+        Une los filtros en este orden:
+        legibilidad / overlay -> referencia bíblica -> subtítulos.
         """
         parts = []
         if prefix_filter:
@@ -779,7 +840,6 @@ async def render_video(data: RenderRequest):
         parts.append(f"subtitles='{safe_subtitles_path}':fontsdir='{safe_fonts_dir}'")
         return ",".join(parts)
 
-    # PRIORIDAD 1: Videos AI (Kling). Si vienen video_url los usamos.
     video_urls = []
     for url in [
         data.video_url,
@@ -791,7 +851,6 @@ async def render_video(data: RenderRequest):
         if url and url.strip():
             video_urls.append(url.strip())
 
-    # PRIORIDAD 2: Imagenes estaticas con Ken Burns (legacy)
     image_urls = []
     for url in [
         data.image_url,
@@ -819,7 +878,7 @@ async def render_video(data: RenderRequest):
             bg_video_path = os.path.join(CLIPS_DIR, f"{job_id}_bg.mp4")
             build_background_from_videos(clip_paths, bg_video_path, audio_duration, job_id)
 
-            overlay_filter = ""
+            overlay_filter = AI_VIDEO_READABILITY_FILTER
             video_filter = compose_video_filter(overlay_filter)
             render_mode = f"ai_video_{len(clip_paths)}"
             media_count = len(clip_paths)
@@ -940,15 +999,20 @@ async def render_video(data: RenderRequest):
         raise HTTPException(
             status_code=500,
             detail={
-                "message": "El video no se genero",
+                "message": "El video no se generó",
                 "render_mode": render_mode,
             }
         )
 
+    base_url = os.environ.get(
+        "BASE_URL",
+        "https://ffmpeg-render-api-productionlbn.up.railway.app"
+    )
+
     return {
         "ok": True,
         "video_url": f"/video/{job_id}.mp4",
-        "video_url_full": f"{os.environ.get('BASE_URL', 'https://ffmpeg-render-api-production-1143.up.railway.app')}/video/{job_id}.mp4",
+        "video_url_full": f"{base_url}/video/{job_id}.mp4",
         "voice_duration": voice_duration,
         "audio_duration": audio_duration,
         "end_tail_duration": END_TAIL_DURATION,
@@ -958,5 +1022,6 @@ async def render_video(data: RenderRequest):
         "speed_factor": speed_factor,
         "music_used": os.path.exists(MUSIC_FILE),
         "media_count": media_count,
-        "referencia_biblica_used": bool(data.referencia_biblica and data.referencia_biblica.strip())
+        "referencia_biblica_used": bool(data.referencia_biblica and data.referencia_biblica.strip()),
+        "hook_received": bool(data.hook and data.hook.strip())
     }
