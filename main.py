@@ -6,6 +6,7 @@ import shutil
 import subprocess
 import base64
 import re
+import unicodedata
 import urllib.request
 
 from fastapi import FastAPI, HTTPException
@@ -22,17 +23,24 @@ CLIPS_DIR = os.path.join(BASE_DIR, "clips")
 
 MUSIC_FILE = "/app/music/background.mp3"
 
-# Segundos extra al final del video con música de fondo, sin voz.
+# Safe zone final con música.
 END_TAIL_DURATION = 1.5
 
-# Retención inicial: estilo especial solo para el hook inicial.
-HOOK_CUE_MAX_START = 2.2
+# Hook visual como shock card.
+HOOK_CARD_START = 0.12
+HOOK_CARD_END = 2.20
 
-# La referencia bíblica aparece después del hook para no competir visualmente.
-REFERENCE_START_TIME = 5.0
+# Referencia bíblica más tarde y discreta.
+REFERENCE_START_TIME = 6.0
 
-# Oscurecimiento suave para mejorar legibilidad sin apagar demasiado los clips AI.
-AI_VIDEO_READABILITY_FILTER = "colorchannelmixer=rr=0.82:gg=0.82:bb=0.82"
+# CTA visual final.
+CTA_CARD_DURATION = 3.0
+
+# Truth punch a mitad del video.
+TRUTH_PUNCH_DURATION = 0.85
+
+# Filtro leve para legibilidad del video AI.
+AI_VIDEO_READABILITY_FILTER = "colorchannelmixer=rr=0.78:gg=0.78:bb=0.78"
 
 os.makedirs(AUDIO_DIR, exist_ok=True)
 os.makedirs(VIDEO_DIR, exist_ok=True)
@@ -52,6 +60,49 @@ app.mount("/video", StaticFiles(directory=VIDEO_DIR), name="video")
 ASS_WHITE = r"\c&HFFFFFF&"
 ASS_GOLD = r"\c&H5AC1E6&"
 
+IMPACT_WORDS = {
+    "DIOS",
+    "NO",
+    "VERDAD",
+    "PAZ",
+    "CULPA",
+    "MIEDO",
+    "PECADO",
+    "CONTROL",
+    "DOLOR",
+    "HERIDA",
+    "SOMBRA",
+    "ALMA",
+    "OBEDECER",
+    "OBEDIENCIA",
+    "ARREPENTIMIENTO",
+    "GRACIA",
+    "PERDON",
+    "PERDÓN",
+    "SANAR",
+    "SANA",
+    "SANÓ",
+    "SANO",
+    "ROTO",
+    "ROTA",
+    "ESCONDIDO",
+    "ESCONDES",
+    "EXAMÍNAME",
+    "EXAMINAME",
+    "VUELVE",
+    "VOLVER",
+}
+
+
+def normalize_token(value: str) -> str:
+    text = str(value or "").upper()
+    text = "".join(
+        c for c in unicodedata.normalize("NFD", text)
+        if unicodedata.category(c) != "Mn"
+    )
+    text = re.sub(r"[^A-ZÑÁÉÍÓÚÜ]+", "", text)
+    return text
+
 
 def escape_ffmpeg_path(path: str) -> str:
     return (
@@ -65,7 +116,6 @@ def escape_ffmpeg_path(path: str) -> str:
 
 
 def escape_drawtext_value(value: str) -> str:
-    """Escapa caracteres especiales para el campo text= de drawtext."""
     if not value:
         return ""
     return (
@@ -74,7 +124,119 @@ def escape_drawtext_value(value: str) -> str:
         .replace(":", "\\:")
         .replace("'", "\\'")
         .replace("%", "\\%")
+        .replace("\n", " ")
+        .replace("\r", " ")
     )
+
+
+def clean_display_text(value: str, max_words: int = 5) -> str:
+    text = str(value or "").strip()
+    text = text.replace("“", "").replace("”", "").replace('"', "")
+    text = re.sub(r"\s+", " ", text)
+    text = text.upper()
+
+    words = text.split()
+    if len(words) > max_words:
+        words = words[:max_words]
+
+    return " ".join(words).strip()
+
+
+def split_headline(text: str) -> tuple[str, str]:
+    words = clean_display_text(text, max_words=5).split()
+
+    if not words:
+        return "NO SIGAS", "IGUAL"
+
+    if len(words) == 1:
+        return "", words[0]
+
+    if len(words) == 2:
+        return words[0], words[1]
+
+    # Última palabra = palabra de choque en dorado.
+    top = " ".join(words[:-1])
+    gold = words[-1]
+    return top, gold
+
+
+def extract_quoted_cta(call_to_action: str) -> str:
+    text = str(call_to_action or "")
+
+    match = re.search(r"[“\"]([^”\"]{2,80})[”\"]", text)
+    if match:
+        phrase = clean_display_text(match.group(1), max_words=4)
+        if phrase:
+            return phrase
+
+    lowered = text.lower()
+
+    if "examin" in lowered or "calma" in lowered or "paz" in lowered:
+        return "EXAMÍNAME, DIOS"
+
+    if "control" in lowered or "soltar" in lowered:
+        return "RENUNCIO AL CONTROL"
+
+    if "obedec" in lowered:
+        return "QUIERO OBEDECER"
+
+    if "volver" in lowered or "regresar" in lowered or "huir" in lowered:
+        return "HAZME VOLVER"
+
+    if "sana" in lowered or "herida" in lowered or "dolor" in lowered:
+        return "SANA MI CORAZÓN"
+
+    if "guía" in lowered or "guia" in lowered or "dirección" in lowered or "direccion" in lowered:
+        return "SEÑOR, GUÍAME"
+
+    return "DIOS, EXAMÍNAME"
+
+
+def extract_truth_punch_text(guion: str) -> str:
+    text = str(guion or "").strip()
+    if not text:
+        return "LA VERDAD DUELE"
+
+    raw_sentences = re.split(r"(?<=[.!?])\s+", text)
+    candidates = []
+
+    triggers = [
+        "pero",
+        "peor",
+        "no había",
+        "no habia",
+        "no siempre",
+        "no sanan",
+        "solo tapan",
+        "seguía",
+        "seguia",
+        "sombra",
+        "verdad",
+        "obediencia",
+        "arrepentimiento",
+        "costumbre",
+        "calma",
+        "opresión",
+        "opresion",
+    ]
+
+    for sentence in raw_sentences:
+        clean = sentence.strip()
+        if not clean:
+            continue
+
+        low = clean.lower()
+        if any(t in low for t in triggers):
+            words = clean_display_text(clean, max_words=5)
+            if 2 <= len(words.split()) <= 5:
+                candidates.append(words)
+
+    if candidates:
+        return candidates[min(len(candidates) // 2, len(candidates) - 1)]
+
+    # Fallback: frase corta de mitad del guion.
+    words = clean_display_text(text, max_words=5)
+    return words or "LA VERDAD DUELE"
 
 
 def get_audio_duration(audio_path: str) -> float:
@@ -111,15 +273,14 @@ def get_audio_duration(audio_path: str) -> float:
 
 
 def download_file(url: str, path: str) -> str:
-    """Descarga cualquier archivo desde URL."""
     urllib.request.urlretrieve(url, path)
     return path
 
 
 def compute_scene_durations(total_duration: float, clip_count: int) -> list:
     """
-    Distribuye la duración visual para respetar la progresión narrativa:
-    escena 1 corta e intensa, escenas medias progresivas, escena final con cierre.
+    Ritmo más agresivo para Shorts:
+    escena 1 corta, cambio visual temprano, cierre con CTA.
     """
     if clip_count <= 0:
         return []
@@ -127,7 +288,8 @@ def compute_scene_durations(total_duration: float, clip_count: int) -> list:
     if clip_count == 1:
         return [max(0.5, total_duration)]
 
-    base = [5.0, 7.0, 8.0, 9.0]
+    # Para 5 clips: 0-3.5, 3.5-8.5, 8.5-15.5, 15.5-25.5, resto.
+    base = [3.5, 5.0, 7.0, 10.0]
 
     durations = []
     remaining = max(0.5, total_duration)
@@ -150,19 +312,27 @@ def compute_scene_durations(total_duration: float, clip_count: int) -> list:
     return durations
 
 
+def scene_crop_expression(scene_index: int) -> tuple[str, str]:
+    """
+    Movimiento artificial leve por escena sin filtros pesados.
+    Trabaja sobre un frame escalado más grande que 720x1280.
+    """
+    patterns = [
+        ("(iw-ow)/2+18*sin(t*0.8)", "(ih-oh)/2-10*cos(t*0.5)"),
+        ("(iw-ow)/2-22*sin(t*0.55)", "(ih-oh)/2+12*sin(t*0.45)"),
+        ("(iw-ow)/2+16*sin(t*0.45)", "(ih-oh)/2+16*cos(t*0.40)"),
+        ("(iw-ow)/2-18*cos(t*0.50)", "(ih-oh)/2-14*sin(t*0.50)"),
+        ("(iw-ow)/2+12*sin(t*0.35)", "(ih-oh)/2+10*cos(t*0.35)"),
+    ]
+    return patterns[scene_index % len(patterns)]
+
+
 def build_background_from_videos(
     clip_paths: list,
     output_path: str,
     total_duration: float,
     job_id: str
 ) -> None:
-    """
-    Optimización para Shorts:
-    - Recorta cada clip según duración narrativa.
-    - Scene 1 queda corta e intensa para apoyar el hook.
-    - Si un clip dura menos que su segmento, congela su último frame.
-    - Mantiene 720x1280, 24fps y preset ultrafast para no romper timeout.
-    """
     n = len(clip_paths)
     if n == 0:
         raise RuntimeError("No clip paths received")
@@ -170,6 +340,10 @@ def build_background_from_videos(
     width = 720
     height = 1280
     fps = 24
+
+    # Escalado mayor para permitir drift/punch sin bordes negros.
+    scale_width = 820
+    scale_height = 1458
 
     scene_durations = compute_scene_durations(total_duration, n)
 
@@ -193,10 +367,12 @@ def build_background_from_videos(
         trim_duration = min(real_clip_duration, target_scene_duration)
         freeze_duration = max(0.0, target_scene_duration - real_clip_duration)
 
+        crop_x, crop_y = scene_crop_expression(i)
+
         chain = (
             f"[{i}:v]"
-            f"scale={width}:{height}:force_original_aspect_ratio=increase,"
-            f"crop={width}:{height},"
+            f"scale={scale_width}:{scale_height}:force_original_aspect_ratio=increase,"
+            f"crop={width}:{height}:x='{crop_x}':y='{crop_y}',"
             f"setsar=1,"
             f"fps={fps},"
             f"trim=duration={trim_duration:.2f},"
@@ -258,10 +434,6 @@ def build_background_from_images(
     total_duration: float,
     job_id: str
 ) -> None:
-    """
-    Versión legacy: aplica Ken Burns a imágenes estáticas.
-    Se mantiene por compatibilidad y como fallback.
-    """
     n = len(image_paths)
     if n == 0:
         raise RuntimeError("No image paths received")
@@ -288,7 +460,7 @@ def build_background_from_images(
             f"crop=800:1422,"
             f"setsar=1,"
             f"zoompan="
-            f"z='1+0.10*on/{frames}':"
+            f"z='1+0.13*on/{frames}':"
             f"x='iw/2-(iw/zoom/2)':"
             f"y='ih/2-(ih/zoom/2)':"
             f"d={frames}:"
@@ -333,11 +505,6 @@ def build_background_from_images(
 
 
 def build_reference_filter(referencia_biblica: str, start_time: float = REFERENCE_START_TIME) -> str:
-    """
-    Construye el drawtext de la referencia bíblica.
-    Aparece pequeña, en gris claro, debajo del área de subtítulos.
-    Para retención inicial, se oculta durante los primeros segundos.
-    """
     if not referencia_biblica or not referencia_biblica.strip():
         return ""
 
@@ -354,16 +521,168 @@ def build_reference_filter(referencia_biblica: str, start_time: float = REFERENC
         f"drawtext="
         f"fontfile='{safe_font_path}':"
         f"text='{safe_text}':"
-        f"fontsize=36:"
-        f"fontcolor=0xB8B8B8:"
-        f"borderw=2:"
+        f"fontsize=28:"
+        f"fontcolor=0xA8A8A8:"
+        f"borderw=1:"
         f"bordercolor=black:"
         f"shadowx=1:"
         f"shadowy=1:"
         f"x=(w-text_w)/2:"
-        f"y=h*0.82:"
+        f"y=h*0.845:"
         f"enable='gte(t\\,{start_time:.2f})'"
     )
+
+
+def build_hook_card_filters(hook_visual_text: str) -> list:
+    if not os.path.exists(RUNTIME_FONT_FILE):
+        return []
+
+    safe_font_path = escape_ffmpeg_path(RUNTIME_FONT_FILE)
+    top_line, gold_line = split_headline(hook_visual_text)
+
+    top_line = escape_drawtext_value(top_line)
+    gold_line = escape_drawtext_value(gold_line)
+
+    enable_hook = f"between(t\\,{HOOK_CARD_START:.2f}\\,{HOOK_CARD_END:.2f})"
+    enable_flash = f"between(t\\,0.00\\,{HOOK_CARD_START:.2f})"
+
+    filters = [
+        f"drawbox=x=0:y=0:w=iw:h=ih:color=black@0.85:t=fill:enable='{enable_flash}'",
+        f"drawbox=x=0:y=0:w=iw:h=ih:color=black@0.28:t=fill:enable='{enable_hook}'",
+        f"drawbox=x=45:y=390:w=630:h=320:color=black@0.52:t=fill:enable='{enable_hook}'",
+        f"drawbox=x=45:y=390:w=630:h=320:color=0xDFAF37@0.18:t=5:enable='{enable_hook}'",
+    ]
+
+    if top_line:
+        filters.append(
+            f"drawtext="
+            f"fontfile='{safe_font_path}':"
+            f"text='{top_line}':"
+            f"fontsize=86:"
+            f"fontcolor=white:"
+            f"borderw=5:"
+            f"bordercolor=black:"
+            f"shadowx=2:"
+            f"shadowy=2:"
+            f"x=(w-text_w)/2:"
+            f"y=455:"
+            f"enable='{enable_hook}'"
+        )
+
+        filters.append(
+            f"drawtext="
+            f"fontfile='{safe_font_path}':"
+            f"text='{gold_line}':"
+            f"fontsize=118:"
+            f"fontcolor=0xE6C15A:"
+            f"borderw=6:"
+            f"bordercolor=black:"
+            f"shadowx=3:"
+            f"shadowy=3:"
+            f"x=(w-text_w)/2:"
+            f"y=555:"
+            f"enable='{enable_hook}'"
+        )
+    else:
+        filters.append(
+            f"drawtext="
+            f"fontfile='{safe_font_path}':"
+            f"text='{gold_line}':"
+            f"fontsize=132:"
+            f"fontcolor=0xE6C15A:"
+            f"borderw=7:"
+            f"bordercolor=black:"
+            f"shadowx=3:"
+            f"shadowy=3:"
+            f"x=(w-text_w)/2:"
+            f"y=510:"
+            f"enable='{enable_hook}'"
+        )
+
+    return filters
+
+
+def build_truth_punch_filters(guion: str, audio_duration: float) -> list:
+    if not os.path.exists(RUNTIME_FONT_FILE):
+        return []
+
+    if audio_duration < 18:
+        return []
+
+    safe_font_path = escape_ffmpeg_path(RUNTIME_FONT_FILE)
+    punch_text = escape_drawtext_value(extract_truth_punch_text(guion))
+
+    start_time = min(max(audio_duration * 0.48, 11.5), max(12.0, audio_duration - 8.0))
+    end_time = min(audio_duration - 3.5, start_time + TRUTH_PUNCH_DURATION)
+
+    if end_time <= start_time:
+        return []
+
+    enable = f"between(t\\,{start_time:.2f}\\,{end_time:.2f})"
+
+    return [
+        f"drawbox=x=70:y=475:w=580:h=180:color=black@0.55:t=fill:enable='{enable}'",
+        f"drawbox=x=70:y=475:w=580:h=180:color=0xDFAF37@0.20:t=4:enable='{enable}'",
+        f"drawtext="
+        f"fontfile='{safe_font_path}':"
+        f"text='{punch_text}':"
+        f"fontsize=78:"
+        f"fontcolor=0xE6C15A:"
+        f"borderw=5:"
+        f"bordercolor=black:"
+        f"shadowx=2:"
+        f"shadowy=2:"
+        f"x=(w-text_w)/2:"
+        f"y=530:"
+        f"enable='{enable}'"
+    ]
+
+
+def build_cta_card_filters(call_to_action: str, audio_duration: float) -> list:
+    if not os.path.exists(RUNTIME_FONT_FILE):
+        return []
+
+    if audio_duration < 8:
+        return []
+
+    safe_font_path = escape_ffmpeg_path(RUNTIME_FONT_FILE)
+
+    phrase = extract_quoted_cta(call_to_action)
+    safe_phrase = escape_drawtext_value(phrase)
+
+    start_time = max(HOOK_CARD_END + 1.0, audio_duration - CTA_CARD_DURATION)
+    end_time = max(start_time + 0.5, audio_duration - 0.20)
+
+    enable = f"between(t\\,{start_time:.2f}\\,{end_time:.2f})"
+
+    return [
+        f"drawbox=x=40:y=420:w=640:h=300:color=black@0.62:t=fill:enable='{enable}'",
+        f"drawbox=x=40:y=420:w=640:h=300:color=0xDFAF37@0.22:t=5:enable='{enable}'",
+        f"drawtext="
+        f"fontfile='{safe_font_path}':"
+        f"text='COMENTA':"
+        f"fontsize=68:"
+        f"fontcolor=white:"
+        f"borderw=4:"
+        f"bordercolor=black:"
+        f"shadowx=2:"
+        f"shadowy=2:"
+        f"x=(w-text_w)/2:"
+        f"y=470:"
+        f"enable='{enable}'",
+        f"drawtext="
+        f"fontfile='{safe_font_path}':"
+        f"text='“{safe_phrase}”':"
+        f"fontsize=84:"
+        f"fontcolor=0xE6C15A:"
+        f"borderw=5:"
+        f"bordercolor=black:"
+        f"shadowx=2:"
+        f"shadowy=2:"
+        f"x=(w-text_w)/2:"
+        f"y=565:"
+        f"enable='{enable}'"
+    ]
 
 
 def seconds_to_ass_time(seconds: float) -> str:
@@ -446,7 +765,7 @@ def build_words_from_alignment(alignment: dict) -> list:
     return words
 
 
-def split_word_items_two_lines(word_items: list, max_line_chars: int = 26) -> list:
+def split_word_items_two_lines(word_items: list, max_line_chars: int = 18) -> list:
     if not word_items:
         return []
 
@@ -476,7 +795,7 @@ def split_word_items_two_lines(word_items: list, max_line_chars: int = 26) -> li
     return [word_items[:best_split_index], word_items[best_split_index:]]
 
 
-def group_words_into_cues(words: list, max_words: int = 8, max_chars: int = 52) -> list:
+def group_words_into_cues(words: list, max_words: int = 4, max_chars: int = 26) -> list:
     cues = []
     bucket = []
 
@@ -528,13 +847,13 @@ def group_words_into_cues(words: list, max_words: int = 8, max_chars: int = 52) 
         cue["start"] = float(cue["start"])
         cue["end"] = float(cue["end"])
 
-        if cue["end"] - cue["start"] < 0.45:
-            cue["end"] = cue["start"] + 0.45
+        if cue["end"] - cue["start"] < 0.35:
+            cue["end"] = cue["start"] + 0.35
 
     return cues
 
 
-def build_line_groups(word_items: list, max_line_chars: int = 26) -> list:
+def build_line_groups(word_items: list, max_line_chars: int = 16) -> list:
     split_lines = split_word_items_two_lines(word_items, max_line_chars=max_line_chars)
     groups = []
     flat_index = 0
@@ -554,32 +873,41 @@ def build_line_groups(word_items: list, max_line_chars: int = 26) -> list:
     return groups
 
 
-def build_ass_dialogue_text(
-    groups: list,
-    active_index: int | None = None,
-    is_hook: bool = False
-) -> str:
+def should_highlight_word(word: str) -> bool:
+    normalized = normalize_token(word)
+    if not normalized:
+        return False
+
+    normalized_impact = {normalize_token(x) for x in IMPACT_WORDS}
+    return normalized in normalized_impact
+
+
+def build_ass_dialogue_text(groups: list, active_index: int | None = None) -> str:
     line_texts = []
 
     for line in groups:
         parts = []
         for item in line:
             word_text = escape_ass_text(item["word"])
-            if active_index is not None and item["index"] == active_index:
+            is_active = active_index is not None and item["index"] == active_index
+            is_impact = should_highlight_word(item["word"])
+
+            if is_active or is_impact:
                 parts.append(r"{" + ASS_GOLD + r"}" + word_text + r"{" + ASS_WHITE + r"}")
             else:
                 parts.append(word_text)
+
         line_texts.append(" ".join(parts))
 
-    if is_hook:
-        prefix = r"{\an2\fs92\bord4\shad0\fscx100\fscy100\fsp1" + ASS_WHITE + r"}"
-    else:
-        prefix = r"{\an2\fs72\bord3\shad0\fscx100\fscy100\fsp0" + ASS_WHITE + r"}"
-
+    prefix = r"{\an2\fs76\bord4\shad0\fscx100\fscy100\fsp0" + ASS_WHITE + r"}"
     return prefix + r"\N".join(line_texts)
 
 
-def write_ass_subtitles(subtitles_path: str, cues: list):
+def write_ass_subtitles(
+    subtitles_path: str,
+    cues: list,
+    cta_start_time: float | None = None
+):
     header = """[Script Info]
 ScriptType: v4.00+
 PlayResX: 720
@@ -589,8 +917,7 @@ ScaledBorderAndShadow: yes
 
 [V4+ Styles]
 Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
-Style: Default,Bebas Neue,72,&H00FFFFFF,&H00FFFFFF,&H00000000,&H64000000,-1,0,0,0,100,100,0,0,1,3,0,2,90,90,280,1
-Style: Hook,Bebas Neue,92,&H00FFFFFF,&H00FFFFFF,&H00000000,&H64000000,-1,0,0,0,100,100,0,0,1,4,0,2,60,60,360,1
+Style: Default,Bebas Neue,76,&H00FFFFFF,&H00FFFFFF,&H00000000,&H64000000,-1,0,0,0,100,100,0,0,1,4,0,2,80,80,285,1
 
 [Events]
 Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
@@ -602,11 +929,18 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
         for cue in cues:
             cue_start = float(cue["start"])
             cue_end = float(cue["end"])
-            is_hook_cue = cue_start < HOOK_CUE_MAX_START
+
+            # Durante el shock card, no mostrar subtítulo normal.
+            if cue_start < HOOK_CARD_END:
+                continue
+
+            # Durante el comment card final, no competir con caption normal.
+            if cta_start_time is not None and cue_start >= cta_start_time:
+                continue
 
             groups = build_line_groups(
                 cue.get("words", []),
-                max_line_chars=14 if is_hook_cue else 20
+                max_line_chars=14
             )
 
             if not groups:
@@ -624,6 +958,12 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
                 word_start = max(cue_start, float(item["start"]))
                 word_end = min(cue_end, float(item["end"]))
 
+                if cta_start_time is not None and word_start >= cta_start_time:
+                    continue
+
+                if cta_start_time is not None:
+                    word_end = min(word_end, cta_start_time)
+
                 if word_start > cursor + eps:
                     segments.append({
                         "start": cursor,
@@ -639,6 +979,9 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
                     })
 
                 cursor = max(cursor, word_end)
+
+            if cta_start_time is not None:
+                cue_end = min(cue_end, cta_start_time)
 
             if cue_end > cursor + eps:
                 segments.append({
@@ -661,17 +1004,14 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
                 else:
                     merged_segments.append(seg)
 
-            style_name = "Hook" if is_hook_cue else "Default"
-
             for seg in merged_segments:
                 start = seconds_to_ass_time(seg["start"])
                 end = seconds_to_ass_time(seg["end"])
                 text = build_ass_dialogue_text(
                     groups,
                     active_index=seg["active_index"],
-                    is_hook=is_hook_cue
                 )
-                f.write(f"Dialogue: 0,{start},{end},{style_name},,0,0,0,,{text}\n")
+                f.write(f"Dialogue: 0,{start},{end},Default,,0,0,0,,{text}\n")
 
 
 @app.get("/")
@@ -683,14 +1023,18 @@ def health():
         "music_exists": os.path.exists(MUSIC_FILE),
         "music_path": MUSIC_FILE,
         "end_tail_duration": END_TAIL_DURATION,
-        "hook_cue_max_start": HOOK_CUE_MAX_START,
+        "hook_card_start": HOOK_CARD_START,
+        "hook_card_end": HOOK_CARD_END,
         "reference_start_time": REFERENCE_START_TIME,
+        "cta_card_duration": CTA_CARD_DURATION,
     }
 
 
 class RenderRequest(BaseModel):
     numero_regla: str = ""
     hook: str = ""
+    hook_visual_text: str = ""
+    call_to_action: str = ""
     guion: str
     subtitles_mode: str = "dynamic"
     audio_base64: str
@@ -814,10 +1158,12 @@ async def render_video(data: RenderRequest):
         flush=True
     )
 
+    cta_start_time = max(HOOK_CARD_END + 1.0, audio_duration - CTA_CARD_DURATION)
+
     adjusted_alignment = speed_up_alignment(data.normalized_alignment, speed_factor)
     words = build_words_from_alignment(adjusted_alignment)
-    cues = group_words_into_cues(words, max_words=6, max_chars=40)
-    write_ass_subtitles(subtitles_path, cues)
+    cues = group_words_into_cues(words, max_words=4, max_chars=26)
+    write_ass_subtitles(subtitles_path, cues, cta_start_time=cta_start_time)
 
     safe_subtitles_path = escape_ffmpeg_path(subtitles_path)
     safe_fonts_dir = escape_ffmpeg_path(FONTS_DIR)
@@ -827,17 +1173,24 @@ async def render_video(data: RenderRequest):
         start_time=REFERENCE_START_TIME
     )
 
+    hook_text = data.hook_visual_text or data.hook or "NO SIGAS IGUAL"
+
     def compose_video_filter(prefix_filter: str = "") -> str:
-        """
-        Une los filtros en este orden:
-        legibilidad / overlay -> referencia bíblica -> subtítulos.
-        """
         parts = []
+
         if prefix_filter:
             parts.append(prefix_filter)
+
         if reference_filter:
             parts.append(reference_filter)
+
         parts.append(f"subtitles='{safe_subtitles_path}':fontsdir='{safe_fonts_dir}'")
+
+        # Overlays después de subtítulos para que el hook/truth/CTA sean dominantes.
+        parts.extend(build_hook_card_filters(hook_text))
+        parts.extend(build_truth_punch_filters(data.guion, audio_duration))
+        parts.extend(build_cta_card_filters(data.call_to_action, audio_duration))
+
         return ",".join(parts)
 
     video_urls = []
@@ -922,7 +1275,7 @@ async def render_video(data: RenderRequest):
             bg_video_path = os.path.join(IMAGE_DIR, f"{job_id}_bg.mp4")
             build_background_from_images(image_paths, bg_video_path, audio_duration, job_id)
 
-            overlay_filter = "colorchannelmixer=rr=0.70:gg=0.70:bb=0.70"
+            overlay_filter = "colorchannelmixer=rr=0.68:gg=0.68:bb=0.68"
             video_filter = compose_video_filter(overlay_filter)
             render_mode = f"static_image_{len(image_paths)}"
             media_count = len(image_paths)
@@ -1023,5 +1376,8 @@ async def render_video(data: RenderRequest):
         "music_used": os.path.exists(MUSIC_FILE),
         "media_count": media_count,
         "referencia_biblica_used": bool(data.referencia_biblica and data.referencia_biblica.strip()),
-        "hook_received": bool(data.hook and data.hook.strip())
+        "hook_received": bool(data.hook and data.hook.strip()),
+        "hook_visual_text_received": bool(data.hook_visual_text and data.hook_visual_text.strip()),
+        "call_to_action_received": bool(data.call_to_action and data.call_to_action.strip()),
+        "cta_visual_phrase": extract_quoted_cta(data.call_to_action),
     }
