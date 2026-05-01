@@ -124,8 +124,11 @@ def escape_drawtext_value(value: str) -> str:
         str(value)
         .replace("\\", "\\\\")
         .replace(":", "\\:")
+        .replace(",", "\\,")
         .replace("'", "\\'")
         .replace("%", "\\%")
+        .replace("[", "\\[")
+        .replace("]", "\\]")
         .replace("\n", " ")
         .replace("\r", " ")
     )
@@ -680,6 +683,39 @@ def build_cta_card_filters(
     ]
 
 
+def validate_cta_for_render(call_to_action: str) -> None:
+    text = str(call_to_action or "").strip()
+
+    if not text:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "message": "call_to_action llegó vacío. No se puede renderizar sin CTA final.",
+                "expected_format": "Comenta “frase corta” si ...",
+            }
+        )
+
+    if not text.startswith("Comenta "):
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "message": "call_to_action no empieza con 'Comenta '. No se puede garantizar la tarjeta CTA.",
+                "call_to_action": text,
+                "expected_format": "Comenta “frase corta” si ...",
+            }
+        )
+
+    if not re.search(r"[“\"]([^”\"]{2,80})[”\"]", text):
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "message": "call_to_action no trae frase entre comillas. No se puede extraer texto para la tarjeta CTA.",
+                "call_to_action": text,
+                "expected_format": "Comenta “frase corta” si ...",
+            }
+        )
+
+
 def seconds_to_ass_time(seconds: float) -> str:
     hours = int(seconds // 3600)
     minutes = int((seconds % 3600) // 60)
@@ -1021,6 +1057,8 @@ def health():
         "reference_start_time": REFERENCE_START_TIME,
         "cta_card_duration": CTA_CARD_DURATION,
         "truth_punch_duration": TRUTH_PUNCH_DURATION,
+        "music_required": True,
+        "cta_card_required": True,
         "render_style": "clean_5_scene_cinematic",
     }
 
@@ -1057,6 +1095,8 @@ async def render_video(data: RenderRequest):
             status_code=500,
             detail=f"La fuente no existe en runtime: {RUNTIME_FONT_FILE}"
         )
+
+    validate_cta_for_render(data.call_to_action)
 
     job_id = str(uuid.uuid4())
 
@@ -1111,69 +1151,70 @@ async def render_video(data: RenderRequest):
     final_duration = round(voice_duration + END_TAIL_DURATION, 3)
     cta_start_time = round(voice_duration + 0.05, 3)
 
-    if os.path.exists(MUSIC_FILE):
-        mix_cmd = [
-            "ffmpeg",
-            "-hide_banner",
-            "-loglevel", "error",
-            "-y",
-            "-stream_loop", "-1",
-            "-i", MUSIC_FILE,
-            "-i", voice_audio_path,
-            "-filter_complex",
-            (
-                f"[0:a]volume=0.20[bg];"
-                f"[1:a]apad=pad_dur={END_TAIL_DURATION},volume=1.4[voice];"
-                f"[bg][voice]amix=inputs=2:duration=first:dropout_transition=2"
-            ),
-            "-t", f"{final_duration:.2f}",
-            "-c:a", "libmp3lame",
-            "-b:a", "192k",
-            "-ar", "44100",
-            "-ac", "2",
-            final_audio_path
-        ]
+    if not os.path.exists(MUSIC_FILE):
+        raise HTTPException(
+            status_code=500,
+            detail={
+                "message": "MUSIC_FILE no existe. El render no debe producir cola final en silencio.",
+                "music_path": MUSIC_FILE,
+            }
+        )
 
-        mix_result = subprocess.run(mix_cmd, capture_output=True, text=True)
+    mix_cmd = [
+        "ffmpeg",
+        "-hide_banner",
+        "-loglevel", "error",
+        "-y",
+        "-stream_loop", "-1",
+        "-i", MUSIC_FILE,
+        "-i", voice_audio_path,
+        "-filter_complex",
+        (
+            f"[0:a]volume=0.26,"
+            f"atrim=0:{final_duration:.2f},"
+            f"asetpts=PTS-STARTPTS,"
+            f"afade=t=out:st={max(0.0, final_duration - 0.8):.2f}:d=0.8[bg];"
+            f"[1:a]volume=1.4,"
+            f"apad=pad_dur={END_TAIL_DURATION},"
+            f"atrim=0:{final_duration:.2f},"
+            f"asetpts=PTS-STARTPTS[voice];"
+            f"[bg][voice]amix=inputs=2:duration=longest:dropout_transition=0,"
+            f"atrim=0:{final_duration:.2f}[aout]"
+        ),
+        "-map", "[aout]",
+        "-c:a", "libmp3lame",
+        "-b:a", "192k",
+        "-ar", "44100",
+        "-ac", "2",
+        final_audio_path
+    ]
 
-        if mix_result.returncode != 0 or not os.path.exists(final_audio_path):
-            raise HTTPException(
-                status_code=500,
-                detail={
-                    "message": "Error mezclando audio final",
-                    "stdout": mix_result.stdout,
-                    "stderr": mix_result.stderr,
-                }
-            )
-    else:
-        pad_cmd = [
-            "ffmpeg",
-            "-hide_banner",
-            "-loglevel", "error",
-            "-y",
-            "-i", voice_audio_path,
-            "-af", f"apad=pad_dur={END_TAIL_DURATION}",
-            "-t", f"{final_duration:.2f}",
-            "-c:a", "libmp3lame",
-            "-b:a", "192k",
-            "-ar", "44100",
-            "-ac", "2",
-            final_audio_path
-        ]
+    mix_result = subprocess.run(mix_cmd, capture_output=True, text=True)
 
-        pad_result = subprocess.run(pad_cmd, capture_output=True, text=True)
-
-        if pad_result.returncode != 0 or not os.path.exists(final_audio_path):
-            raise HTTPException(
-                status_code=500,
-                detail={
-                    "message": "Error extendiendo audio final",
-                    "stdout": pad_result.stdout,
-                    "stderr": pad_result.stderr,
-                }
-            )
+    if mix_result.returncode != 0 or not os.path.exists(final_audio_path):
+        raise HTTPException(
+            status_code=500,
+            detail={
+                "message": "Error mezclando audio final",
+                "returncode": mix_result.returncode,
+                "stdout": mix_result.stdout,
+                "stderr": mix_result.stderr,
+            }
+        )
 
     final_audio_duration = round(get_audio_duration(final_audio_path), 3)
+
+    if final_audio_duration < final_duration - 0.25:
+        raise HTTPException(
+            status_code=500,
+            detail={
+                "message": "El audio final quedó más corto que el video. Se cancela para evitar cola en silencio.",
+                "voice_duration": voice_duration,
+                "final_duration": final_duration,
+                "final_audio_duration": final_audio_duration,
+                "music_used": os.path.exists(MUSIC_FILE),
+            }
+        )
 
     print(
         f"[{job_id}] voice_duration={voice_duration:.2f}s, "
@@ -1197,6 +1238,27 @@ async def render_video(data: RenderRequest):
     )
 
     hook_text = data.hook_visual_text or data.hook or "NO SIGAS IGUAL"
+    cta_phrase = extract_quoted_cta(data.call_to_action, hook=data.hook, guion=data.guion)
+    cta_card_filters = build_cta_card_filters(
+        data.call_to_action,
+        hook=data.hook,
+        guion=data.guion,
+        cta_start_time=cta_start_time,
+        final_duration=final_duration
+    )
+
+    if not cta_card_filters:
+        raise HTTPException(
+            status_code=500,
+            detail={
+                "message": "CTA card no fue generada. Se cancela render para evitar final vacío.",
+                "call_to_action": data.call_to_action,
+                "cta_phrase": cta_phrase,
+                "cta_start_time": cta_start_time,
+                "final_duration": final_duration,
+                "font_exists": os.path.exists(RUNTIME_FONT_FILE),
+            }
+        )
 
     def compose_video_filter(prefix_filter: str = "") -> str:
         parts = []
@@ -1211,13 +1273,7 @@ async def render_video(data: RenderRequest):
 
         parts.extend(build_hook_card_filters(hook_text))
         parts.extend(build_truth_punch_filters(data.guion, voice_duration))
-        parts.extend(build_cta_card_filters(
-            data.call_to_action,
-            hook=data.hook,
-            guion=data.guion,
-            cta_start_time=cta_start_time,
-            final_duration=final_duration
-        ))
+        parts.extend(cta_card_filters)
 
         return ",".join(parts)
 
@@ -1403,14 +1459,16 @@ async def render_video(data: RenderRequest):
         "render_mode": render_mode,
         "cues_count": len(cues),
         "speed_factor": speed_factor,
-        "music_used": os.path.exists(MUSIC_FILE),
+        "music_used": True,
         "media_count": media_count,
         "referencia_biblica_used": bool(data.referencia_biblica and data.referencia_biblica.strip()),
         "hook_received": bool(data.hook and data.hook.strip()),
         "hook_visual_text_received": bool(data.hook_visual_text and data.hook_visual_text.strip()),
         "call_to_action_received": bool(data.call_to_action and data.call_to_action.strip()),
-        "cta_visual_phrase": extract_quoted_cta(data.call_to_action, hook=data.hook, guion=data.guion),
+        "cta_visual_phrase": cta_phrase,
         "truth_punch_text": extract_truth_punch_text(data.guion),
         "truth_punch_duration": TRUTH_PUNCH_DURATION,
+        "music_required": True,
+        "cta_card_required": True,
         "render_style": "clean_5_scene_cinematic",
     }
