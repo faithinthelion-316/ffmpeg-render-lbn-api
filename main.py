@@ -23,7 +23,7 @@ CLIPS_DIR = os.path.join(BASE_DIR, "clips")
 
 MUSIC_FILE = "/app/music/background.mp3"
 
-END_TAIL_DURATION = 2.0
+END_TAIL_DURATION = 2.4
 
 HOOK_CARD_START = 0.12
 HOOK_CARD_END = 2.20
