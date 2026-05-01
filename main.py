@@ -23,7 +23,7 @@ CLIPS_DIR = os.path.join(BASE_DIR, "clips")
 
 MUSIC_FILE = "/app/music/background.mp3"
 
-END_TAIL_DURATION = 2.8
+END_TAIL_DURATION = 2.0
 
 HOOK_CARD_START = 0.12
 HOOK_CARD_END = 2.20
@@ -34,7 +34,7 @@ HOOK_WORD_3_START = 0.55
 
 REFERENCE_START_TIME = 6.0
 
-CTA_CARD_DURATION = 2.4
+CTA_CARD_DURATION = 2.75
 
 TRUTH_PUNCH_DURATION = 1.35
 
@@ -847,7 +847,7 @@ def build_cta_card_filters(
     safe_phrase_lines = safe_phrase_lines[:2]
 
     start_time = cta_start_time
-    end_time = min(final_duration - 0.10, cta_start_time + CTA_CARD_DURATION)
+    end_time = final_duration - 0.05
 
     if end_time <= start_time + 0.4:
         return []
@@ -1045,6 +1045,26 @@ def build_words_from_alignment(alignment: dict) -> list:
             })
 
     return words
+
+
+def find_cta_start_from_words(words: list, fallback_time: float) -> float:
+    """
+    Detecta cuándo empieza el CTA hablado buscando la palabra "Comenta"
+    dentro del alignment ya ajustado por speed_factor.
+
+    Si no la encuentra, usa un fallback cerca del final de la voz.
+    """
+    for item in words:
+        raw_word = str(item.get("word", ""))
+        normalized = normalize_token(raw_word)
+
+        if normalized == "COMENTA":
+            try:
+                return max(0.0, float(item.get("start", fallback_time)) - 0.05)
+            except Exception:
+                return fallback_time
+
+    return fallback_time
 
 
 def split_word_items_two_lines(word_items: list, max_line_chars: int = 18) -> list:
@@ -1408,7 +1428,10 @@ async def render_video(data: RenderRequest):
 
     voice_duration = round(get_audio_duration(voice_audio_path), 3)
     final_duration = round(voice_duration + END_TAIL_DURATION, 3)
-    cta_start_time = round(voice_duration + 0.05, 3)
+
+    # Fallback temporal. El inicio real del CTA se recalcula después
+    # usando el alignment de ElevenLabs ya ajustado por speed_factor.
+    cta_start_time = round(max(0.0, voice_duration - 2.4), 3)
 
     if not os.path.exists(MUSIC_FILE):
         raise HTTPException(
@@ -1478,13 +1501,23 @@ async def render_video(data: RenderRequest):
     print(
         f"[{job_id}] voice_duration={voice_duration:.2f}s, "
         f"final_duration={final_duration:.2f}s, "
-        f"final_audio_duration={final_audio_duration:.2f}s, "
-        f"cta_start_time={cta_start_time:.2f}s",
+        f"final_audio_duration={final_audio_duration:.2f}s",
         flush=True
     )
 
     adjusted_alignment = speed_up_alignment(data.normalized_alignment, speed_factor)
     words = build_words_from_alignment(adjusted_alignment)
+
+    # La CTA visual debe aparecer cuando la voz dice "Comenta",
+    # no después de que termina toda la narración.
+    cta_start_time = round(
+        find_cta_start_from_words(
+            words,
+            fallback_time=max(0.0, voice_duration - 2.4)
+        ),
+        3
+    )
+
     cues = group_words_into_cues(words, max_words=4, max_chars=26)
     write_ass_subtitles(subtitles_path, cues, cta_start_time=cta_start_time)
 
@@ -1504,6 +1537,16 @@ async def render_video(data: RenderRequest):
         guion=data.guion,
         cta_start_time=cta_start_time,
         final_duration=final_duration
+    )
+
+    print(
+        f"[{job_id}] CTA FILTER DEBUG: "
+        f"voice_duration={voice_duration:.2f}, "
+        f"final_duration={final_duration:.2f}, "
+        f"cta_start_time={cta_start_time:.2f}, "
+        f"cta_phrase={cta_phrase}, "
+        f"cta_filters_count={len(cta_card_filters)}",
+        flush=True
     )
 
     if not cta_card_filters:
