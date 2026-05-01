@@ -28,6 +28,10 @@ END_TAIL_DURATION = 2.8
 HOOK_CARD_START = 0.12
 HOOK_CARD_END = 2.20
 
+HOOK_WORD_1_START = 0.12
+HOOK_WORD_2_START = 0.30
+HOOK_WORD_3_START = 0.55
+
 REFERENCE_START_TIME = 6.0
 
 CTA_CARD_DURATION = 2.4
@@ -159,9 +163,46 @@ def split_headline(text: str) -> tuple[str, str]:
     if len(words) == 2:
         return words[0], words[1]
 
+    if len(words) == 3:
+        return " ".join(words[:2]), words[2]
+
     top = " ".join(words[:-1])
     gold = words[-1]
     return top, gold
+
+
+def build_hook_impact_lines(text: str) -> list[str]:
+    words = clean_display_text(text, max_words=5).split()
+
+    if not words:
+        return ["NO", "SIGAS", "IGUAL"]
+
+    if len(words) <= 3:
+        return words
+
+    first_line = " ".join(words[:-2])
+    second_line = words[-2]
+    third_line = words[-1]
+
+    return [first_line, second_line, third_line]
+
+
+def adjust_font_size_for_text(text: str, base_size: int, min_size: int = 72) -> int:
+    plain = str(text or "").replace("\\,", ",")
+    char_count = len(plain)
+
+    if char_count <= 8:
+        scale = 1.00
+    elif char_count <= 10:
+        scale = 0.92
+    elif char_count <= 12:
+        scale = 0.82
+    elif char_count <= 15:
+        scale = 0.72
+    else:
+        scale = 0.62
+
+    return max(min_size, int(round(base_size * scale)))
 
 
 def extract_quoted_cta(call_to_action: str, hook: str = "", guion: str = "") -> str:
@@ -518,8 +559,56 @@ def build_reference_filter(referencia_biblica: str, start_time: float = REFERENC
         f"shadowy=1:"
         f"x=(w-text_w)/2:"
         f"y=h*0.845:"
-        f"enable='gte(t\\,{start_time:.2f})'"
+        f"enable='gte(t\,{start_time:.2f})'"
     )
+
+
+def add_pop_drawtext(
+    filters: list,
+    safe_font_path: str,
+    text: str,
+    final_size: int,
+    fontcolor: str,
+    center_y: int,
+    start_time: float,
+    end_time: float,
+    borderw: int = 6,
+    shadow: int = 3,
+    overshoot_scale: float = 1.10,
+    start_scale: float = 0.82,
+):
+    if not text:
+        return
+
+    phase1_end = min(end_time, start_time + 0.06)
+    phase2_end = min(end_time, start_time + 0.14)
+
+    phases = [
+        (start_time, phase1_end, max(1, int(round(final_size * start_scale)))),
+        (phase1_end, phase2_end, max(1, int(round(final_size * overshoot_scale)))),
+        (phase2_end, end_time, final_size),
+    ]
+
+    for phase_start, phase_end, size in phases:
+        if phase_end <= phase_start:
+            continue
+
+        enable = f"between(t\,{phase_start:.2f}\,{phase_end:.2f})"
+
+        filters.append(
+            f"drawtext="
+            f"fontfile='{safe_font_path}':"
+            f"text='{text}':"
+            f"fontsize={size}:"
+            f"fontcolor={fontcolor}:"
+            f"borderw={borderw}:"
+            f"bordercolor=black:"
+            f"shadowx={shadow}:"
+            f"shadowy={shadow}:"
+            f"x=(w-text_w)/2:"
+            f"y={center_y}-text_h/2:"
+            f"enable='{enable}'"
+        )
 
 
 def build_hook_card_filters(hook_visual_text: str) -> list:
@@ -527,66 +616,135 @@ def build_hook_card_filters(hook_visual_text: str) -> list:
         return []
 
     safe_font_path = escape_ffmpeg_path(RUNTIME_FONT_FILE)
-    top_line, gold_line = split_headline(hook_visual_text)
 
-    top_line = escape_drawtext_value(top_line)
-    gold_line = escape_drawtext_value(gold_line)
+    lines = build_hook_impact_lines(hook_visual_text)
+    safe_lines = [escape_drawtext_value(x) for x in lines if x and x.strip()]
 
-    enable_hook = f"between(t\\,{HOOK_CARD_START:.2f}\\,{HOOK_CARD_END:.2f})"
-    enable_flash = f"between(t\\,0.00\\,{HOOK_CARD_START:.2f})"
+    if not safe_lines:
+        safe_lines = ["NO", "SIGAS", "IGUAL"]
+
+    safe_lines = safe_lines[:3]
+
+    enable_flash = f"between(t\,0.00\,{HOOK_CARD_START:.2f})"
+    enable_card = f"between(t\,{HOOK_CARD_START:.2f}\,{HOOK_CARD_END:.2f})"
 
     filters = [
-        f"drawbox=x=0:y=0:w=iw:h=ih:color=black@0.88:t=fill:enable='{enable_flash}'",
-        f"drawbox=x=0:y=0:w=iw:h=ih:color=black@0.30:t=fill:enable='{enable_hook}'",
-        f"drawbox=x=45:y=390:w=630:h=320:color=black@0.54:t=fill:enable='{enable_hook}'",
-        f"drawbox=x=45:y=390:w=630:h=320:color=0xDFAF37@0.20:t=5:enable='{enable_hook}'",
+        f"drawbox=x=0:y=0:w=iw:h=ih:color=black@0.90:t=fill:enable='{enable_flash}'",
+        f"drawbox=x=0:y=0:w=iw:h=ih:color=black@0.40:t=fill:enable='{enable_card}'",
+        f"drawbox=x=24:y=285:w=672:h=610:color=black@0.68:t=fill:enable='{enable_card}'",
+        f"drawbox=x=24:y=285:w=672:h=610:color=0xDFAF37@0.25:t=6:enable='{enable_card}'",
     ]
 
-    if top_line:
-        filters.append(
-            f"drawtext="
-            f"fontfile='{safe_font_path}':"
-            f"text='{top_line}':"
-            f"fontsize=86:"
-            f"fontcolor=white:"
-            f"borderw=5:"
-            f"bordercolor=black:"
-            f"shadowx=2:"
-            f"shadowy=2:"
-            f"x=(w-text_w)/2:"
-            f"y=455:"
-            f"enable='{enable_hook}'"
+    if len(safe_lines) == 1:
+        word = safe_lines[0]
+        size = adjust_font_size_for_text(word, 210, min_size=120)
+        add_pop_drawtext(
+            filters=filters,
+            safe_font_path=safe_font_path,
+            text=word,
+            final_size=size,
+            fontcolor="0xFFD36A",
+            center_y=585,
+            start_time=HOOK_WORD_3_START,
+            end_time=HOOK_CARD_END,
+            borderw=9,
+            shadow=4,
+            overshoot_scale=1.12,
+            start_scale=0.78,
+        )
+        return filters
+
+    if len(safe_lines) == 2:
+        first = safe_lines[0]
+        second = safe_lines[1]
+
+        first_size = adjust_font_size_for_text(first, 132, min_size=88)
+        second_size = adjust_font_size_for_text(second, 204, min_size=126)
+
+        add_pop_drawtext(
+            filters=filters,
+            safe_font_path=safe_font_path,
+            text=first,
+            final_size=first_size,
+            fontcolor="white",
+            center_y=470,
+            start_time=HOOK_WORD_2_START,
+            end_time=HOOK_CARD_END,
+            borderw=6,
+            shadow=3,
+            overshoot_scale=1.08,
+            start_scale=0.80,
         )
 
-        filters.append(
-            f"drawtext="
-            f"fontfile='{safe_font_path}':"
-            f"text='{gold_line}':"
-            f"fontsize=118:"
-            f"fontcolor=0xE6C15A:"
-            f"borderw=6:"
-            f"bordercolor=black:"
-            f"shadowx=3:"
-            f"shadowy=3:"
-            f"x=(w-text_w)/2:"
-            f"y=555:"
-            f"enable='{enable_hook}'"
+        add_pop_drawtext(
+            filters=filters,
+            safe_font_path=safe_font_path,
+            text=second,
+            final_size=second_size,
+            fontcolor="0xFFD36A",
+            center_y=660,
+            start_time=HOOK_WORD_3_START,
+            end_time=HOOK_CARD_END,
+            borderw=9,
+            shadow=4,
+            overshoot_scale=1.12,
+            start_scale=0.78,
         )
-    else:
-        filters.append(
-            f"drawtext="
-            f"fontfile='{safe_font_path}':"
-            f"text='{gold_line}':"
-            f"fontsize=132:"
-            f"fontcolor=0xE6C15A:"
-            f"borderw=7:"
-            f"bordercolor=black:"
-            f"shadowx=3:"
-            f"shadowy=3:"
-            f"x=(w-text_w)/2:"
-            f"y=510:"
-            f"enable='{enable_hook}'"
-        )
+
+        return filters
+
+    first = safe_lines[0]
+    second = safe_lines[1]
+    third = safe_lines[2]
+
+    first_size = adjust_font_size_for_text(first, 92, min_size=70)
+    second_size = adjust_font_size_for_text(second, 136, min_size=88)
+    third_size = adjust_font_size_for_text(third, 196, min_size=120)
+
+    add_pop_drawtext(
+        filters=filters,
+        safe_font_path=safe_font_path,
+        text=first,
+        final_size=first_size,
+        fontcolor="white",
+        center_y=395,
+        start_time=HOOK_WORD_1_START,
+        end_time=HOOK_CARD_END,
+        borderw=5,
+        shadow=2,
+        overshoot_scale=1.06,
+        start_scale=0.82,
+    )
+
+    add_pop_drawtext(
+        filters=filters,
+        safe_font_path=safe_font_path,
+        text=second,
+        final_size=second_size,
+        fontcolor="white",
+        center_y=535,
+        start_time=HOOK_WORD_2_START,
+        end_time=HOOK_CARD_END,
+        borderw=7,
+        shadow=3,
+        overshoot_scale=1.08,
+        start_scale=0.80,
+    )
+
+    add_pop_drawtext(
+        filters=filters,
+        safe_font_path=safe_font_path,
+        text=third,
+        final_size=third_size,
+        fontcolor="0xFFD36A",
+        center_y=715,
+        start_time=HOOK_WORD_3_START,
+        end_time=HOOK_CARD_END,
+        borderw=9,
+        shadow=4,
+        overshoot_scale=1.12,
+        start_scale=0.78,
+    )
 
     return filters
 
@@ -607,7 +765,7 @@ def build_truth_punch_filters(guion: str, voice_duration: float) -> list:
     if end_time <= start_time:
         return []
 
-    enable = f"between(t\\,{start_time:.2f}\\,{end_time:.2f})"
+    enable = f"between(t\,{start_time:.2f}\,{end_time:.2f})"
 
     return [
         f"drawbox=x=100:y=500:w=520:h=150:color=black@0.58:t=fill:enable='{enable}'",
@@ -651,7 +809,7 @@ def build_cta_card_filters(
     if end_time <= start_time + 0.4:
         return []
 
-    enable = f"between(t\\,{start_time:.2f}\\,{end_time:.2f})"
+    enable = f"between(t\,{start_time:.2f}\,{end_time:.2f})"
 
     return [
         f"drawbox=x=40:y=420:w=640:h=300:color=black@0.64:t=fill:enable='{enable}'",
@@ -1054,11 +1212,17 @@ def health():
         "end_tail_duration": END_TAIL_DURATION,
         "hook_card_start": HOOK_CARD_START,
         "hook_card_end": HOOK_CARD_END,
+        "hook_word_1_start": HOOK_WORD_1_START,
+        "hook_word_2_start": HOOK_WORD_2_START,
+        "hook_word_3_start": HOOK_WORD_3_START,
+        "hook_card_mode": "staggered_vertical_pop_impact",
         "reference_start_time": REFERENCE_START_TIME,
         "cta_card_duration": CTA_CARD_DURATION,
         "truth_punch_duration": TRUTH_PUNCH_DURATION,
         "music_required": True,
         "cta_card_required": True,
+        "voice_starts_at": "0.00s",
+        "sfx_enabled": False,
         "render_style": "clean_5_scene_cinematic",
     }
 
@@ -1170,7 +1334,7 @@ async def render_video(data: RenderRequest):
         "-i", voice_audio_path,
         "-filter_complex",
         (
-            f"[0:a]volume=0.26,"
+            f"[0:a]volume=0.24,"
             f"atrim=0:{final_duration:.2f},"
             f"asetpts=PTS-STARTPTS,"
             f"afade=t=out:st={max(0.0, final_duration - 0.8):.2f}:d=0.8[bg];"
@@ -1468,6 +1632,12 @@ async def render_video(data: RenderRequest):
         "cta_visual_phrase": cta_phrase,
         "truth_punch_text": extract_truth_punch_text(data.guion),
         "truth_punch_duration": TRUTH_PUNCH_DURATION,
+        "hook_card_mode": "staggered_vertical_pop_impact",
+        "hook_word_1_start": HOOK_WORD_1_START,
+        "hook_word_2_start": HOOK_WORD_2_START,
+        "hook_word_3_start": HOOK_WORD_3_START,
+        "voice_starts_at": "0.00s",
+        "sfx_enabled": False,
         "music_required": True,
         "cta_card_required": True,
         "render_style": "clean_5_scene_cinematic",
