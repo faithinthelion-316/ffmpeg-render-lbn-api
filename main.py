@@ -286,6 +286,41 @@ def extract_quoted_cta(call_to_action: str, hook: str = "", guion: str = "") -> 
     return "DIOS, EXAMÍNAME"
 
 
+
+
+def extract_cta_visual_parts(call_to_action: str, hook: str = "", guion: str = "") -> tuple[str, str]:
+    """
+    Returns a dynamic CTA label and visual phrase.
+
+    Examples:
+    - Comenta “renuncio al control” si... -> (COMENTA, RENUNCIO AL CONTROL)
+    - Escribe “Dios, guíame” si... -> (ESCRIBE, DIOS, GUÍAME)
+    - Sígueme si quieres... -> (SÍGUEME, short fallback phrase)
+    """
+    text = str(call_to_action or "").strip()
+
+    label = "COMENTA"
+    first_word_match = re.search(r"\S+", text)
+    if first_word_match:
+        label_candidate = clean_display_text(first_word_match.group(0), max_words=1)
+        if label_candidate:
+            label = label_candidate
+
+    quoted = re.search(r"[“\"]([^”\"]{2,80})[”\"]", text)
+    if quoted:
+        phrase = clean_display_text(quoted.group(1), max_words=4)
+        if phrase:
+            return label, phrase
+
+    remainder = re.sub(r"^\S+", "", text).strip()
+    remainder = re.split(r"\bsi\b|\bpara\b", remainder, flags=re.IGNORECASE)[0].strip() or remainder
+    phrase = clean_display_text(remainder, max_words=4)
+
+    if not phrase:
+        phrase = extract_quoted_cta(call_to_action, hook=hook, guion=guion)
+
+    return label, phrase
+
 def extract_truth_punch_text(guion: str) -> str:
     text = str(guion or "").strip().lower()
 
@@ -837,7 +872,8 @@ def build_cta_card_filters(
 
     safe_font_path = escape_ffmpeg_path(RUNTIME_FONT_FILE)
 
-    phrase = extract_quoted_cta(call_to_action, hook=hook, guion=guion)
+    cta_label, phrase = extract_cta_visual_parts(call_to_action, hook=hook, guion=guion)
+    safe_label = escape_drawtext_value(cta_label)
     phrase_lines = split_cta_phrase_lines(phrase)
     safe_phrase_lines = [escape_drawtext_value(x) for x in phrase_lines if x and x.strip()]
 
@@ -866,7 +902,7 @@ def build_cta_card_filters(
     add_pop_drawtext(
         filters=filters,
         safe_font_path=safe_font_path,
-        text="COMENTA",
+        text=safe_label or "COMENTA",
         final_size=82,
         fontcolor="white",
         center_y=450,
@@ -942,27 +978,17 @@ def validate_cta_for_render(call_to_action: str) -> None:
             status_code=400,
             detail={
                 "message": "call_to_action llegó vacío. No se puede renderizar sin CTA final.",
-                "expected_format": "Comenta “frase corta” si ...",
+                "expected_format": "CTA hablado breve, por ejemplo: Comenta “frase corta” si ...",
             }
         )
 
-    if not text.startswith("Comenta "):
+    if len(text.split()) < 2:
         raise HTTPException(
             status_code=400,
             detail={
-                "message": "call_to_action no empieza con 'Comenta '. No se puede garantizar la tarjeta CTA.",
+                "message": "call_to_action es demasiado corto para detectar y renderizar una CTA final confiable.",
                 "call_to_action": text,
-                "expected_format": "Comenta “frase corta” si ...",
-            }
-        )
-
-    if not re.search(r"[“\"]([^”\"]{2,80})[”\"]", text):
-        raise HTTPException(
-            status_code=400,
-            detail={
-                "message": "call_to_action no trae frase entre comillas. No se puede extraer texto para la tarjeta CTA.",
-                "call_to_action": text,
-                "expected_format": "Comenta “frase corta” si ...",
+                "expected_format": "CTA hablado breve con acción + razón.",
             }
         )
 
@@ -1047,22 +1073,106 @@ def build_words_from_alignment(alignment: dict) -> list:
     return words
 
 
-def find_cta_start_from_words(words: list, fallback_time: float) -> float:
+def tokenize_for_alignment_match(text: str) -> list[str]:
     """
-    Detecta cuándo empieza el CTA hablado buscando la palabra "Comenta"
-    dentro del alignment ya ajustado por speed_factor.
-
-    Si no la encuentra, usa un fallback cerca del final de la voz.
+    Converts text into normalized word tokens for matching against ElevenLabs alignment.
+    Works with any CTA wording: Comenta, Sígueme, Escribe, Guarda, Ora, etc.
     """
-    for item in words:
-        raw_word = str(item.get("word", ""))
-        normalized = normalize_token(raw_word)
+    raw = str(text or "").strip()
 
-        if normalized == "COMENTA":
-            try:
-                return max(0.0, float(item.get("start", fallback_time)) - 0.05)
-            except Exception:
-                return fallback_time
+    if not raw:
+        return []
+
+    raw = raw.replace("“", " ").replace("”", " ").replace('"', " ")
+    raw = "".join(
+        c for c in unicodedata.normalize("NFD", raw)
+        if unicodedata.category(c) != "Mn"
+    )
+    raw = raw.upper()
+    raw = re.sub(r"[^A-ZÑ0-9\s]+", " ", raw)
+    raw = re.sub(r"\s+", " ", raw).strip()
+
+    tokens = []
+    for part in raw.split():
+        token = normalize_token(part)
+        if token:
+            tokens.append(token)
+
+    return tokens
+
+
+def find_sequence_start_in_words(
+    words: list,
+    target_text: str,
+    fallback_time: float,
+    min_match_tokens: int = 4,
+    search_after_ratio: float = 0.45
+) -> float:
+    """
+    Finds the start time of target_text inside ElevenLabs word alignment.
+
+    This is CTA-wording agnostic:
+    - Comenta “...”
+    - Sígueme si...
+    - Escribe “...”
+    - Guarda este video...
+    - Ora conmigo...
+
+    It searches the latter part of the narration to avoid matching earlier repeated words.
+    If it cannot find a confident match, it falls back near the end of the voice.
+    """
+    if not words:
+        return fallback_time
+
+    target_tokens = tokenize_for_alignment_match(target_text)
+    alignment_tokens = [normalize_token(item.get("word", "")) for item in words]
+
+    indexed_tokens = [
+        (idx, token)
+        for idx, token in enumerate(alignment_tokens)
+        if token
+    ]
+
+    if not target_tokens or not indexed_tokens:
+        return fallback_time
+
+    total_words = len(indexed_tokens)
+    search_start_position = int(total_words * search_after_ratio)
+
+    max_window = min(6, len(target_tokens))
+    min_window = min(min_match_tokens, max_window)
+
+    for window_size in range(max_window, max(2, min_window) - 1, -1):
+        target_window = target_tokens[:window_size]
+
+        for pos in range(search_start_position, total_words - window_size + 1):
+            candidate = [indexed_tokens[pos + offset][1] for offset in range(window_size)]
+
+            if candidate == target_window:
+                original_word_index = indexed_tokens[pos][0]
+                try:
+                    return max(0.0, float(words[original_word_index].get("start", fallback_time)) - 0.05)
+                except Exception:
+                    return fallback_time
+
+    quoted_match = re.search(r"[“\"]([^”\"]{2,80})[”\"]", str(target_text or ""))
+    if quoted_match:
+        quoted_tokens = tokenize_for_alignment_match(quoted_match.group(1))
+
+        if quoted_tokens:
+            max_window = min(4, len(quoted_tokens))
+            for window_size in range(max_window, 1, -1):
+                target_window = quoted_tokens[:window_size]
+
+                for pos in range(search_start_position, total_words - window_size + 1):
+                    candidate = [indexed_tokens[pos + offset][1] for offset in range(window_size)]
+
+                    if candidate == target_window:
+                        original_word_index = indexed_tokens[pos][0]
+                        try:
+                            return max(0.0, float(words[original_word_index].get("start", fallback_time)) - 0.35)
+                        except Exception:
+                            return fallback_time
 
     return fallback_time
 
@@ -1331,6 +1441,7 @@ def health():
         "hook_card_mode": "forced_3_line_vertical_pop_impact",
         "truth_punch_mode": "animated_mid_video_pop",
         "cta_card_mode": "large_vertical_staggered_pop",
+        "cta_detection_mode": "call_to_action_alignment_match_dynamic",
         "reference_start_time": REFERENCE_START_TIME,
         "cta_card_duration": CTA_CARD_DURATION,
         "truth_punch_duration": TRUTH_PUNCH_DURATION,
@@ -1429,8 +1540,8 @@ async def render_video(data: RenderRequest):
     voice_duration = round(get_audio_duration(voice_audio_path), 3)
     final_duration = round(voice_duration + END_TAIL_DURATION, 3)
 
-    # Fallback temporal. El inicio real del CTA se recalcula después
-    # usando el alignment de ElevenLabs ya ajustado por speed_factor.
+    # Temporary fallback. The real CTA start will be recalculated from the
+    # ElevenLabs word alignment using the actual call_to_action text.
     cta_start_time = round(max(0.0, voice_duration - 2.4), 3)
 
     if not os.path.exists(MUSIC_FILE):
@@ -1501,18 +1612,18 @@ async def render_video(data: RenderRequest):
     print(
         f"[{job_id}] voice_duration={voice_duration:.2f}s, "
         f"final_duration={final_duration:.2f}s, "
-        f"final_audio_duration={final_audio_duration:.2f}s",
+        f"final_audio_duration={final_audio_duration:.2f}s, "
+        f"cta_start_time={cta_start_time:.2f}s",
         flush=True
     )
 
     adjusted_alignment = speed_up_alignment(data.normalized_alignment, speed_factor)
     words = build_words_from_alignment(adjusted_alignment)
 
-    # La CTA visual debe aparecer cuando la voz dice "Comenta",
-    # no después de que termina toda la narración.
     cta_start_time = round(
-        find_cta_start_from_words(
-            words,
+        find_sequence_start_in_words(
+            words=words,
+            target_text=data.call_to_action,
             fallback_time=max(0.0, voice_duration - 2.4)
         ),
         3
@@ -1530,7 +1641,7 @@ async def render_video(data: RenderRequest):
     )
 
     hook_text = data.hook_visual_text or data.hook or "NO SIGAS IGUAL"
-    cta_phrase = extract_quoted_cta(data.call_to_action, hook=data.hook, guion=data.guion)
+    cta_label, cta_phrase = extract_cta_visual_parts(data.call_to_action, hook=data.hook, guion=data.guion)
     cta_card_filters = build_cta_card_filters(
         data.call_to_action,
         hook=data.hook,
@@ -1544,6 +1655,7 @@ async def render_video(data: RenderRequest):
         f"voice_duration={voice_duration:.2f}, "
         f"final_duration={final_duration:.2f}, "
         f"cta_start_time={cta_start_time:.2f}, "
+        f"cta_label={cta_label}, "
         f"cta_phrase={cta_phrase}, "
         f"cta_filters_count={len(cta_card_filters)}",
         flush=True
@@ -1767,12 +1879,14 @@ async def render_video(data: RenderRequest):
         "hook_received": bool(data.hook and data.hook.strip()),
         "hook_visual_text_received": bool(data.hook_visual_text and data.hook_visual_text.strip()),
         "call_to_action_received": bool(data.call_to_action and data.call_to_action.strip()),
+        "cta_visual_label": cta_label,
         "cta_visual_phrase": cta_phrase,
         "truth_punch_text": extract_truth_punch_text(data.guion),
         "truth_punch_duration": TRUTH_PUNCH_DURATION,
         "hook_card_mode": "forced_3_line_vertical_pop_impact",
         "truth_punch_mode": "animated_mid_video_pop",
         "cta_card_mode": "large_vertical_staggered_pop",
+        "cta_detection_mode": "call_to_action_alignment_match_dynamic",
         "hook_word_1_start": HOOK_WORD_1_START,
         "hook_word_2_start": HOOK_WORD_2_START,
         "hook_word_3_start": HOOK_WORD_3_START,
