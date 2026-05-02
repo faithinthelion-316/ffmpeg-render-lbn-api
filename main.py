@@ -769,7 +769,11 @@ def build_hook_card_filters(hook_visual_text: str) -> list:
     return filters
 
 
-def build_truth_punch_filters(guion: str, voice_duration: float) -> list:
+def build_truth_punch_filters(
+    guion: str,
+    voice_duration: float,
+    truth_punch_text: str = ""
+) -> list:
     if not os.path.exists(RUNTIME_FONT_FILE):
         return []
 
@@ -777,7 +781,11 @@ def build_truth_punch_filters(guion: str, voice_duration: float) -> list:
         return []
 
     safe_font_path = escape_ffmpeg_path(RUNTIME_FONT_FILE)
-    punch_lines = split_truth_punch_lines(extract_truth_punch_text(guion))
+
+    incoming_truth_punch = clean_display_text(truth_punch_text, max_words=4)
+    resolved_truth_punch = incoming_truth_punch or extract_truth_punch_text(guion)
+
+    punch_lines = split_truth_punch_lines(resolved_truth_punch)
     safe_lines = [escape_drawtext_value(x) for x in punch_lines if x and x.strip()]
 
     if not safe_lines:
@@ -1439,7 +1447,7 @@ def health():
         "hook_word_2_start": HOOK_WORD_2_START,
         "hook_word_3_start": HOOK_WORD_3_START,
         "hook_card_mode": "forced_3_line_vertical_pop_impact",
-        "truth_punch_mode": "animated_mid_video_pop",
+        "truth_punch_mode": "animated_mid_video_pop_input_with_fallback",
         "cta_card_mode": "large_vertical_staggered_pop",
         "cta_detection_mode": "call_to_action_alignment_match_dynamic",
         "reference_start_time": REFERENCE_START_TIME,
@@ -1459,6 +1467,7 @@ class RenderRequest(BaseModel):
     hook_visual_text: str = ""
     call_to_action: str = ""
     guion: str
+    truth_punch_text: str = ""
     subtitles_mode: str = "dynamic"
     audio_base64: str
     normalized_alignment: dict
@@ -1650,6 +1659,9 @@ async def render_video(data: RenderRequest):
         final_duration=final_duration
     )
 
+    incoming_truth_punch = clean_display_text(data.truth_punch_text, max_words=4)
+    resolved_truth_punch = incoming_truth_punch or extract_truth_punch_text(data.guion)
+
     print(
         f"[{job_id}] CTA FILTER DEBUG: "
         f"voice_duration={voice_duration:.2f}, "
@@ -1686,7 +1698,13 @@ async def render_video(data: RenderRequest):
         parts.append(f"subtitles='{safe_subtitles_path}':fontsdir='{safe_fonts_dir}'")
 
         parts.extend(build_hook_card_filters(hook_text))
-        parts.extend(build_truth_punch_filters(data.guion, voice_duration))
+        parts.extend(
+            build_truth_punch_filters(
+                data.guion,
+                voice_duration,
+                truth_punch_text=resolved_truth_punch
+            )
+        )
         parts.extend(cta_card_filters)
 
         return ",".join(parts)
@@ -1881,10 +1899,11 @@ async def render_video(data: RenderRequest):
         "call_to_action_received": bool(data.call_to_action and data.call_to_action.strip()),
         "cta_visual_label": cta_label,
         "cta_visual_phrase": cta_phrase,
-        "truth_punch_text": extract_truth_punch_text(data.guion),
+        "truth_punch_text": resolved_truth_punch,
+        "truth_punch_text_received": bool(data.truth_punch_text and data.truth_punch_text.strip()),
         "truth_punch_duration": TRUTH_PUNCH_DURATION,
         "hook_card_mode": "forced_3_line_vertical_pop_impact",
-        "truth_punch_mode": "animated_mid_video_pop",
+        "truth_punch_mode": "animated_mid_video_pop_input_with_fallback",
         "cta_card_mode": "large_vertical_staggered_pop",
         "cta_detection_mode": "call_to_action_alignment_match_dynamic",
         "hook_word_1_start": HOOK_WORD_1_START,
